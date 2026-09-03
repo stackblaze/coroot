@@ -43,6 +43,36 @@ type Result struct {
 	RootCause         string `json:"root_cause"`
 	ImmediateFixes    string `json:"immediate_fixes"`
 	DetailedRootCause string `json:"detailed_root_cause_analysis"`
+	Usage             Usage  `json:"-"`
+}
+
+// Usage is the OpenAI-compatible token count from a completion. Zero means the
+// provider did not report it.
+type Usage struct {
+	PromptTokens     int
+	CompletionTokens int
+	CachedTokens     int
+	TotalTokens      int
+}
+
+func (u Usage) Billed() bool {
+	return u.TotalTokens > 0 || u.PromptTokens+u.CompletionTokens > 0
+}
+
+func (u Usage) WithTotal() Usage {
+	if u.TotalTokens <= 0 {
+		u.TotalTokens = u.PromptTokens + u.CompletionTokens
+	}
+	return u
+}
+
+func addUsage(a, b Usage) Usage {
+	return Usage{
+		PromptTokens:     a.PromptTokens + b.PromptTokens,
+		CompletionTokens: a.CompletionTokens + b.CompletionTokens,
+		CachedTokens:     a.CachedTokens + b.CachedTokens,
+		TotalTokens:      a.WithTotal().TotalTokens + b.WithTotal().TotalTokens,
+	}.WithTotal()
 }
 
 type Config struct {
@@ -91,6 +121,14 @@ type chatResponse struct {
 			Content string `json:"content"`
 		} `json:"message"`
 	} `json:"choices"`
+	Usage *struct {
+		PromptTokens        int `json:"prompt_tokens"`
+		CompletionTokens    int `json:"completion_tokens"`
+		TotalTokens         int `json:"total_tokens"`
+		PromptTokensDetails *struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
+	} `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
@@ -109,13 +147,16 @@ func (c *Client) Analyze(ctx context.Context, evidence any) (*Result, error) {
 		{Role: "user", Content: "Incident evidence:\n" + string(payload)},
 	}
 
+	var billed Usage
 	for attempt := 0; attempt < 2; attempt++ {
-		content, err := c.complete(ctx, messages)
+		content, usage, err := c.complete(ctx, messages)
 		if err != nil {
 			return nil, err
 		}
+		billed = addUsage(billed, usage)
 		result, parseErr := parseResult(content)
 		if parseErr == nil {
+			result.Usage = billed.WithTotal()
 			return result, nil
 		}
 		if attempt == 1 {
@@ -142,7 +183,7 @@ func (c *Client) Evaluate(ctx context.Context, system, user string) (*Evaluation
 	if system == "" {
 		return nil, fmt.Errorf("system prompt is required")
 	}
-	content, err := c.complete(ctx, []message{
+	content, _, err := c.complete(ctx, []message{
 		{Role: "system", Content: system},
 		{Role: "user", Content: user},
 	})
@@ -160,7 +201,7 @@ func (c *Client) Evaluate(ctx context.Context, system, user string) (*Evaluation
 	return &eval, nil
 }
 
-func (c *Client) complete(ctx context.Context, messages []message) (string, error) {
+func (c *Client) complete(ctx context.Context, messages []message) (string, Usage, error) {
 	body, err := json.Marshal(chatRequest{
 		Model:          c.cfg.Model,
 		Messages:       messages,
@@ -168,12 +209,12 @@ func (c *Client) complete(ctx context.Context, messages []message) (string, erro
 		Temperature:    0.1,
 	})
 	if err != nil {
-		return "", err
+		return "", Usage{}, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.BaseUrl+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return "", err
+		return "", Usage{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.cfg.ApiKey != "" {
@@ -182,14 +223,14 @@ func (c *Client) complete(ctx context.Context, messages []message) (string, erro
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("llm request failed: %w", err)
+		return "", Usage{}, fmt.Errorf("llm request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	// Cap the response so a misconfigured base URL can't stream an unbounded body into memory.
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return "", fmt.Errorf("failed to read llm response: %w", err)
+		return "", Usage{}, fmt.Errorf("failed to read llm response: %w", err)
 	}
 
 	var parsed chatResponse
@@ -197,20 +238,35 @@ func (c *Client) complete(ctx context.Context, messages []message) (string, erro
 
 	if resp.StatusCode != http.StatusOK {
 		if unmarshalErr == nil && parsed.Error != nil && parsed.Error.Message != "" {
-			return "", fmt.Errorf("llm returned %s: %s", resp.Status, parsed.Error.Message)
+			return "", Usage{}, fmt.Errorf("llm returned %s: %s", resp.Status, parsed.Error.Message)
 		}
-		return "", fmt.Errorf("llm returned %s: %s", resp.Status, truncate(string(raw), 300))
+		return "", Usage{}, fmt.Errorf("llm returned %s: %s", resp.Status, truncate(string(raw), 300))
 	}
 	if unmarshalErr != nil {
-		return "", fmt.Errorf("failed to parse llm response: %w", unmarshalErr)
+		return "", Usage{}, fmt.Errorf("failed to parse llm response: %w", unmarshalErr)
 	}
 	if parsed.Error != nil && parsed.Error.Message != "" {
-		return "", fmt.Errorf("llm returned an error: %s", parsed.Error.Message)
+		return "", Usage{}, fmt.Errorf("llm returned an error: %s", parsed.Error.Message)
 	}
 	if len(parsed.Choices) == 0 {
-		return "", fmt.Errorf("llm returned no choices")
+		return "", Usage{}, fmt.Errorf("llm returned no choices")
 	}
-	return parsed.Choices[0].Message.Content, nil
+	return parsed.Choices[0].Message.Content, usageFromResponse(parsed), nil
+}
+
+func usageFromResponse(parsed chatResponse) Usage {
+	if parsed.Usage == nil {
+		return Usage{}
+	}
+	u := Usage{
+		PromptTokens:     parsed.Usage.PromptTokens,
+		CompletionTokens: parsed.Usage.CompletionTokens,
+		TotalTokens:      parsed.Usage.TotalTokens,
+	}
+	if parsed.Usage.PromptTokensDetails != nil {
+		u.CachedTokens = parsed.Usage.PromptTokensDetails.CachedTokens
+	}
+	return u.WithTotal()
 }
 
 func parseResult(content string) (*Result, error) {

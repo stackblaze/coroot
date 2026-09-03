@@ -31,6 +31,7 @@ var (
 	authAnonymousRole                           = kingpin.Flag("auth-anonymous-role", "Disable authentication and assign one of the following roles to the anonymous user: Admin, Editor, or Viewer.").Envar("AUTH_ANONYMOUS_ROLE").String()
 	authBootstrapAdminPassword                  = kingpin.Flag("auth-bootstrap-admin-password", "Password for the default Admin user").Envar("AUTH_BOOTSTRAP_ADMIN_PASSWORD").String()
 	authHandoffSecret                           = kingpin.Flag("auth-handoff-secret", "Shared secret for trusted one-time session handoff (POST /api/auth/handoff). Used by Kubero server-to-server calls.").Envar("AUTH_HANDOFF_SECRET").String()
+	authKuberoUsageUrl                          = kingpin.Flag("kubero-usage-url", "Kubero endpoint that records incident RCA token usage against the tenant (POST /api/internal/ai-usage, X-Handoff-Secret).").Envar("KUBERO_USAGE_URL").String()
 	developerMode                               = kingpin.Flag("developer-mode", "If enabled, Coroot will not use embedded static assets").Envar("DEVELOPER_MODE").Bool()
 	clickHouseSpaceManagerDisabled              = kingpin.Flag("disable-clickhouse-space-manager", "If enabled, Coroot will manage ClickHouse disk space by removing old partitions").Envar("CLICKHOUSE_SPACE_MANAGER_DISABLED").Bool()
 	clickHouseSpaceManagerUsageThresholdPercent = kingpin.Flag("clickhouse-space-manager-usage-threshold", "Disk usage percentage threshold for triggering partition cleanup in ClickHouse").Envar("CLICKHOUSE_SPACE_MANAGER_USAGE_THRESHOLD").Int()
@@ -141,6 +142,9 @@ func (cfg *Config) ApplyFlags() {
 	}
 	if *authHandoffSecret != "" {
 		cfg.Auth.HandoffSecret = *authHandoffSecret
+	}
+	if *authKuberoUsageUrl != "" {
+		cfg.Auth.KuberoUsageUrl = *authKuberoUsageUrl
 	}
 	if *developerMode {
 		cfg.DeveloperMode = *developerMode

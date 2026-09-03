@@ -11,11 +11,23 @@ import (
 )
 
 func completionResponse(content string) string {
-	b, _ := json.Marshal(map[string]any{
+	return completionResponseWithUsage(content, 0, 0, 0)
+}
+
+func completionResponseWithUsage(content string, prompt, completion, total int) string {
+	body := map[string]any{
 		"choices": []map[string]any{
 			{"message": map[string]string{"content": content}},
 		},
-	})
+	}
+	if total > 0 || prompt+completion > 0 {
+		body["usage"] = map[string]any{
+			"prompt_tokens":     prompt,
+			"completion_tokens": completion,
+			"total_tokens":      total,
+		}
+	}
+	b, _ := json.Marshal(body)
 	return string(b)
 }
 
@@ -181,14 +193,38 @@ func TestRCAAnalyzeUpstreamError(t *testing.T) {
 	}
 }
 
-func TestRCAAnalyzeNoChoices(t *testing.T) {
+func TestRCAAnalyzeCapturesUsage(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"choices":[]}`))
+		_, _ = w.Write([]byte(completionResponseWithUsage(`{"root_cause":"OOMKilled"}`, 80, 20, 100)))
 	}))
 	defer srv.Close()
 
-	_, err := NewClient(Config{BaseUrl: srv.URL, Model: "m"}).Analyze(context.Background(), nil)
-	if err == nil || !strings.Contains(err.Error(), "no choices") {
-		t.Fatalf("expected a no choices error, got %v", err)
+	res, err := NewClient(Config{BaseUrl: srv.URL, Model: "m"}).Analyze(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	if res.Usage.PromptTokens != 80 || res.Usage.CompletionTokens != 20 || res.Usage.TotalTokens != 100 {
+		t.Errorf("unexpected usage: %+v", res.Usage)
+	}
+}
+
+func TestRCAAnalyzeSumsRetryUsage(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			_, _ = w.Write([]byte(completionResponseWithUsage("not json", 10, 2, 12)))
+			return
+		}
+		_, _ = w.Write([]byte(completionResponseWithUsage(`{"root_cause":"slow query"}`, 11, 3, 14)))
+	}))
+	defer srv.Close()
+
+	res, err := NewClient(Config{BaseUrl: srv.URL, Model: "m"}).Analyze(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	if res.Usage.TotalTokens != 26 {
+		t.Errorf("expected retry tokens to sum, got %+v", res.Usage)
 	}
 }

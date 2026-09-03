@@ -195,6 +195,9 @@ type Auth struct {
 	BootstrapAdminPassword string `yaml:"bootstrap_admin_password"`
 	// HandoffSecret protects POST /api/auth/handoff for trusted callers (e.g. Kubero).
 	HandoffSecret string `yaml:"handoff_secret"`
+	// KuberoUsageUrl is the Kubero S2S endpoint that records RCA token usage
+	// against the tenant that owns the app namespace (POST, X-Handoff-Secret).
+	KuberoUsageUrl string `yaml:"kubero_usage_url"`
 }
 
 const (

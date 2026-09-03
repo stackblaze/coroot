@@ -52,7 +52,7 @@ func (api *Api) RCA(w http.ResponseWriter, r *http.Request, u *db.User) {
 		if incident != nil {
 			from, to = api.IncidentTimeContext(projectId, incident, to)
 		}
-		rca = api.localRCA(r.Context(), project, appId, incident, from, to)
+		rca = api.localRCA(r.Context(), project, appId, incident, from, to, u)
 		return
 	}
 
