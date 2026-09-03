@@ -138,7 +138,7 @@ func (api *Api) localRCAEnabled() bool {
 
 // localRCA runs an on-demand investigation. It loads and audits the world itself because the caller
 // only has the HTTP request context.
-func (api *Api) localRCA(ctx context.Context, project *db.Project, appId model.ApplicationId, incident *model.ApplicationIncident, from, to timeseries.Time) *model.RCA {
+func (api *Api) localRCA(ctx context.Context, project *db.Project, appId model.ApplicationId, incident *model.ApplicationIncident, from, to timeseries.Time, u *db.User) *model.RCA {
 	rca := &model.RCA{}
 	if project.Multicluster() {
 		rca.Status = "Failed"
@@ -166,7 +166,7 @@ func (api *Api) localRCA(ctx context.Context, project *db.Project, appId model.A
 	}
 	auditor.Audit(world, project, app, nil)
 
-	result, err := api.investigateLocally(ctx, project, world, app, incident, from, to)
+	result, err := api.investigateLocally(ctx, project, world, app, incident, from, to, userEmail(u))
 	if err != nil {
 		klog.Errorln("rca:", err)
 		rca.Status = "Failed"
@@ -208,7 +208,7 @@ func (api *Api) localIncidentRCA(project *db.Project, world *model.World, incide
 		ctx, cancel := context.WithTimeout(context.Background(), api.rca.timeout())
 		defer cancel()
 
-		rca, err := api.investigateLocally(ctx, project, world, app, &background, from, to)
+		rca, err := api.investigateLocally(ctx, project, world, app, &background, from, to, "")
 		if err != nil {
 			klog.Errorf("rca: incident %s: %s", background.Key, err)
 			rca = &model.RCA{Status: "Failed", Error: err.Error()}
@@ -222,7 +222,7 @@ func (api *Api) localIncidentRCA(project *db.Project, world *model.World, incide
 
 // investigateLocally summarizes the telemetry for the application and asks the configured LLM for a
 // root cause. The world must already be audited.
-func (api *Api) investigateLocally(ctx context.Context, project *db.Project, world *model.World, app *model.Application, incident *model.ApplicationIncident, from, to timeseries.Time) (*model.RCA, error) {
+func (api *Api) investigateLocally(ctx context.Context, project *db.Project, world *model.World, app *model.Application, incident *model.ApplicationIncident, from, to timeseries.Time, email string) (*model.RCA, error) {
 	client := api.rca.llm()
 	if client == nil {
 		return nil, fmt.Errorf("no LLM configured for local RCA")
@@ -263,6 +263,7 @@ func (api *Api) investigateLocally(ctx context.Context, project *db.Project, wor
 		return nil, err
 	}
 	klog.Infof("rca: analyzed %s in %s", app.Id, time.Since(start).Truncate(time.Millisecond))
+	api.reportKuberoUsage(app.Id.Namespace, email, api.rca.config().Model, result.Usage)
 
 	return &model.RCA{
 		Status:            "OK",
@@ -271,4 +272,11 @@ func (api *Api) investigateLocally(ctx context.Context, project *db.Project, wor
 		ImmediateFixes:    result.ImmediateFixes,
 		DetailedRootCause: result.DetailedRootCause,
 	}, nil
+}
+
+func userEmail(u *db.User) string {
+	if u == nil {
+		return ""
+	}
+	return u.Email
 }
