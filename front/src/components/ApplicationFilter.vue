@@ -117,6 +117,11 @@ export default {
         if (this.$route.query.search) {
             this.searchString = this.$route.query.search;
         }
+        const fromQuery = this.namespacesFromQuery();
+        if (fromQuery.length) {
+            this.selectedNamespaces = fromQuery;
+            this.autoSelectNamespace = false;
+        }
     },
 
     computed: {
@@ -256,6 +261,14 @@ export default {
             if (next.length !== this.selectedCategories.length) {
                 this.selectedCategories = next;
             }
+        },
+        namespacesFromQuery() {
+            const raw = this.$route.query.namespaces;
+            if (Array.isArray(raw)) return raw.map((v) => String(v || '').trim()).filter(Boolean);
+            if (typeof raw === 'string' && raw.trim()) {
+                return raw.split(',').map((v) => v.trim()).filter(Boolean);
+            }
+            return [];
         },
         load() {
             const projectId = this.$route.params.projectId;
