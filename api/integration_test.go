@@ -220,3 +220,34 @@ func TestIntegrationStatusRequiresProject(t *testing.T) {
 		t.Errorf("expected 400, got %d", w.Code)
 	}
 }
+
+func TestIntegrationResolveIncidentRequiresSecret(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/api/integration/incident/resolve?project=p&application=ns:Deployment:app", nil)
+	r.Header.Set("X-Handoff-Secret", "nope")
+	w := httptest.NewRecorder()
+	integrationTestApi("s3cret").IntegrationResolveIncident(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestIntegrationResolveIncidentValidatesParams(t *testing.T) {
+	cases := map[string]string{
+		"missing both":           "/api/integration/incident/resolve",
+		"missing application":    "/api/integration/incident/resolve?project=p",
+		"missing project":        "/api/integration/incident/resolve?application=ns:Deployment:app",
+		"invalid application id": "/api/integration/incident/resolve?project=p&application=garbage",
+	}
+	for name, target := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, target, nil)
+			r.Header.Set("X-Handoff-Secret", "s3cret")
+			w := httptest.NewRecorder()
+			// A nil db would panic, so reaching 400 also proves we reject before any write.
+			integrationTestApi("s3cret").IntegrationResolveIncident(w, r)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("expected 400, got %d", w.Code)
+			}
+		})
+	}
+}
