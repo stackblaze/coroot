@@ -266,7 +266,10 @@ export default {
             const raw = this.$route.query.namespaces;
             if (Array.isArray(raw)) return raw.map((v) => String(v || '').trim()).filter(Boolean);
             if (typeof raw === 'string' && raw.trim()) {
-                return raw.split(',').map((v) => v.trim()).filter(Boolean);
+                return raw
+                    .split(',')
+                    .map((v) => v.trim())
+                    .filter(Boolean);
             }
             return [];
         },

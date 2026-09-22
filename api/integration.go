@@ -117,6 +117,61 @@ func (api *Api) IntegrationProjectIncidents(w http.ResponseWriter, r *http.Reque
 	utils.WriteJson(w, map[string]any{"incidents": out})
 }
 
+// IntegrationResolveIncident closes the open incident(s) for an application on behalf of a
+// trusted caller that knows the workload is gone — Kubero calls it while deleting an app.
+// The watcher would close it anyway once the app drops out of its one-hour world window,
+// but until then the dashboard and the incident list keep showing an app that no longer
+// exists. Idempotent: with nothing open it answers 200 with an empty list.
+//
+// POST /api/integration/incident/resolve?project={projectId}&application={applicationId}
+func (api *Api) IntegrationResolveIncident(w http.ResponseWriter, r *http.Request) {
+	if !api.checkHandoffSecret(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	q := r.URL.Query()
+	projectId := strings.TrimSpace(q.Get("project"))
+	applicationId := strings.TrimSpace(q.Get("application"))
+	if projectId == "" || applicationId == "" {
+		http.Error(w, "project and application are required", http.StatusBadRequest)
+		return
+	}
+
+	appId, err := model.NewApplicationIdFromString(applicationId, projectId)
+	if err != nil {
+		klog.Warningln("invalid application id:", applicationId)
+		http.Error(w, "invalid application id", http.StatusBadRequest)
+		return
+	}
+
+	now := timeseries.Now()
+	resolved := make([]integrationIncident, 0, 1)
+	// One open incident per app is the steady state; the loop only guards against
+	// duplicates left by older builds. Bounded so a DB that refuses the update can't spin.
+	for range 10 {
+		incident, err := api.db.GetLastOpenIncident(db.ProjectId(projectId), appId)
+		if err != nil {
+			klog.Errorln("failed to get incident:", err)
+			http.Error(w, "", http.StatusInternalServerError)
+			return
+		}
+		if incident == nil {
+			break
+		}
+		incident.ResolvedAt = now
+		incident.Severity = model.OK
+		if err = api.db.ResolveIncident(db.ProjectId(projectId), incident); err != nil {
+			klog.Errorln("failed to resolve incident:", err)
+			http.Error(w, "", http.StatusInternalServerError)
+			return
+		}
+		klog.Infof("%s: incident %s for %s resolved by integration caller", projectId, incident.Key, appId.String())
+		resolved = append(resolved, newIntegrationIncident(incident, api.cfg.UrlBasePath, projectId))
+	}
+	utils.WriteJson(w, map[string]any{"resolved": resolved})
+}
+
 func incidentUrl(basePath, projectId, key string) string {
 	if basePath == "" {
 		basePath = "/"
