@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 
 	"github.com/coroot/coroot/api/views"
@@ -117,14 +118,115 @@ func (api *Api) IntegrationProjectIncidents(w http.ResponseWriter, r *http.Reque
 	utils.WriteJson(w, map[string]any{"incidents": out})
 }
 
-// IntegrationResolveIncident closes the open incident(s) for an application on behalf of a
-// trusted caller that knows the workload is gone — Kubero calls it while deleting an app.
-// The watcher would close it anyway once the app drops out of its one-hour world window,
-// but until then the dashboard and the incident list keep showing an app that no longer
-// exists. Idempotent: with nothing open it answers 200 with an empty list.
+// IntegrationResolveIncident closes open incident(s) on behalf of a trusted caller that
+// knows the workload is gone — Kubero calls it while deleting an app. The watcher would
+// close them anyway once the app drops out of its one-hour world window, but until then
+// the dashboard and the incident list keep showing an app that no longer exists.
+// Idempotent: with nothing open it answers 200 with an empty list.
+//
+// Two selectors:
+//
+//	application={applicationId}         one application (the app's own web/worker)
+//	namespace={ns}&contains={substring}  every open incident in the namespace whose
+//	                                     workload name contains the substring — the
+//	                                     add-on workloads (`rfr-<name>`, `<name>-pooler`)
+//	                                     the deleted app owned, whose exact kinds and
+//	                                     names the caller does not know.
 //
 // POST /api/integration/incident/resolve?project={projectId}&application={applicationId}
+// POST /api/integration/incident/resolve?project={projectId}&namespace={ns}&contains={s}
 func (api *Api) IntegrationResolveIncident(w http.ResponseWriter, r *http.Request) {
+	if !api.checkHandoffSecret(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	q := r.URL.Query()
+	projectId := strings.TrimSpace(q.Get("project"))
+	applicationId := strings.TrimSpace(q.Get("application"))
+	namespace := strings.ToLower(strings.TrimSpace(q.Get("namespace")))
+	contains := strings.ToLower(strings.TrimSpace(q.Get("contains")))
+	if projectId == "" || (applicationId == "" && (namespace == "" || contains == "")) {
+		http.Error(w, "project and either application or namespace+contains are required", http.StatusBadRequest)
+		return
+	}
+
+	var targets []*model.ApplicationIncident
+	if applicationId != "" {
+		appId, err := model.NewApplicationIdFromString(applicationId, projectId)
+		if err != nil {
+			klog.Warningln("invalid application id:", applicationId)
+			http.Error(w, "invalid application id", http.StatusBadRequest)
+			return
+		}
+		// One open incident per app is the steady state; the loop only guards against
+		// duplicates left by older builds. Bounded so a DB that refuses the update can't spin.
+		for range 10 {
+			incident, err := api.db.GetLastOpenIncident(db.ProjectId(projectId), appId)
+			if err != nil {
+				klog.Errorln("failed to get incident:", err)
+				http.Error(w, "", http.StatusInternalServerError)
+				return
+			}
+			if incident == nil {
+				break
+			}
+			if err = api.resolveIncidentNow(projectId, incident); err != nil {
+				http.Error(w, "", http.StatusInternalServerError)
+				return
+			}
+			targets = append(targets, incident)
+		}
+	} else {
+		open, err := api.db.GetOpenIncidents(db.ProjectId(projectId))
+		if err != nil {
+			klog.Errorln("failed to get incidents:", err)
+			http.Error(w, "", http.StatusInternalServerError)
+			return
+		}
+		for _, incident := range open {
+			id := incident.ApplicationId
+			if strings.ToLower(id.Namespace) != namespace || !strings.Contains(strings.ToLower(id.Name), contains) {
+				continue
+			}
+			if err = api.resolveIncidentNow(projectId, incident); err != nil {
+				http.Error(w, "", http.StatusInternalServerError)
+				return
+			}
+			targets = append(targets, incident)
+		}
+	}
+
+	resolved := make([]integrationIncident, 0, len(targets))
+	for _, incident := range targets {
+		resolved = append(resolved, newIntegrationIncident(incident, api.cfg.UrlBasePath, projectId))
+	}
+	utils.WriteJson(w, map[string]any{"resolved": resolved})
+}
+
+// resolveIncidentNow mirrors the watcher's missing-app path: resolved_at = now, no notification.
+func (api *Api) resolveIncidentNow(projectId string, incident *model.ApplicationIncident) error {
+	incident.ResolvedAt = timeseries.Now()
+	incident.Severity = model.OK
+	if err := api.db.ResolveIncident(db.ProjectId(projectId), incident); err != nil {
+		klog.Errorln("failed to resolve incident:", err)
+		return err
+	}
+	klog.Infof("%s: incident %s for %s resolved by integration caller", projectId, incident.Key, incident.ApplicationId.String())
+	return nil
+}
+
+// IntegrationSetLatencySLO sets an application's latency SLO objective for the same
+// trusted callers. Kubero uses it for queue-backed add-ons: BullMQ workers park on
+// blocking BZPOPMIN, which the eBPF Redis parser times as one request lasting up to the
+// block timeout, so ~40% of "requests" breach the default 0.5s objective while real
+// command latency is microseconds (calm-meadow-x7d0, 2026-09-22). Writes the same
+// per-app check config the UI's "Adjust Latency SLO" writes; does not require the
+// application to be in the world yet, so it can be set right after provisioning.
+// reset=true removes the override (back to the default).
+//
+// POST /api/integration/check_config/latency?project={p}&application={a}&objective_bucket=10&objective_percentage=99
+func (api *Api) IntegrationSetLatencySLO(w http.ResponseWriter, r *http.Request) {
 	if !api.checkHandoffSecret(r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -137,7 +239,6 @@ func (api *Api) IntegrationResolveIncident(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "project and application are required", http.StatusBadRequest)
 		return
 	}
-
 	appId, err := model.NewApplicationIdFromString(applicationId, projectId)
 	if err != nil {
 		klog.Warningln("invalid application id:", applicationId)
@@ -145,31 +246,34 @@ func (api *Api) IntegrationResolveIncident(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	now := timeseries.Now()
-	resolved := make([]integrationIncident, 0, 1)
-	// One open incident per app is the steady state; the loop only guards against
-	// duplicates left by older builds. Bounded so a DB that refuses the update can't spin.
-	for range 10 {
-		incident, err := api.db.GetLastOpenIncident(db.ProjectId(projectId), appId)
-		if err != nil {
-			klog.Errorln("failed to get incident:", err)
+	if q.Get("reset") == "true" {
+		if err = api.db.SaveCheckConfig(db.ProjectId(projectId), appId, model.Checks.SLOLatency.Id, nil); err != nil {
+			klog.Errorln("failed to reset check config:", err)
 			http.Error(w, "", http.StatusInternalServerError)
 			return
 		}
-		if incident == nil {
-			break
-		}
-		incident.ResolvedAt = now
-		incident.Severity = model.OK
-		if err = api.db.ResolveIncident(db.ProjectId(projectId), incident); err != nil {
-			klog.Errorln("failed to resolve incident:", err)
-			http.Error(w, "", http.StatusInternalServerError)
-			return
-		}
-		klog.Infof("%s: incident %s for %s resolved by integration caller", projectId, incident.Key, appId.String())
-		resolved = append(resolved, newIntegrationIncident(incident, api.cfg.UrlBasePath, projectId))
+		utils.WriteJson(w, map[string]any{"application_id": appId.String(), "latency": nil})
+		return
 	}
-	utils.WriteJson(w, map[string]any{"resolved": resolved})
+
+	bucket, err1 := strconv.ParseFloat(q.Get("objective_bucket"), 32)
+	percentage, err2 := strconv.ParseFloat(q.Get("objective_percentage"), 32)
+	if err1 != nil || err2 != nil || bucket <= 0 || percentage <= 0 || percentage > 100 {
+		http.Error(w, "objective_bucket (seconds, > 0) and objective_percentage (0-100] are required", http.StatusBadRequest)
+		return
+	}
+	cfg := model.CheckConfigSLOLatency{
+		Custom:              false,
+		ObjectiveBucket:     float32(bucket),
+		ObjectivePercentage: float32(percentage),
+	}
+	if err = api.db.SaveCheckConfig(db.ProjectId(projectId), appId, model.Checks.SLOLatency.Id, []model.CheckConfigSLOLatency{cfg}); err != nil {
+		klog.Errorln("failed to save check config:", err)
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
+	klog.Infof("%s: latency SLO for %s set to %g%% within %gs by integration caller", projectId, appId.String(), percentage, bucket)
+	utils.WriteJson(w, map[string]any{"application_id": appId.String(), "latency": cfg})
 }
 
 func incidentUrl(basePath, projectId, key string) string {
