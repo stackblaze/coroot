@@ -84,10 +84,17 @@ func TestSuppressNewIncident(t *testing.T) {
 	addPod(app, "young", 10, 19)
 	assert.False(t, suppressNewIncident(app, now, badAt(19), nil))
 
-	// No live pods is not "settling": with recent bad events this is a real
-	// outage.
+	// The delete→recreate gap: no live pods, but the predecessor died within
+	// the settle window and its teardown probe failures are recent — still a
+	// transition, not an outage.
 	app = newApp()
-	addPod(app, "gone", 0, 15)
+	addPod(app, "gone", 0, 16)
+	assert.True(t, suppressNewIncident(app, now, badAt(16, 17), nil))
+
+	// Pod-less for LONGER than the settle window: with recent bad events this
+	// is a real outage, not a transition.
+	app = newApp()
+	addPod(app, "long-gone", 0, 10)
 	assert.False(t, suppressNewIncident(app, now, badAt(19), nil))
 }
 

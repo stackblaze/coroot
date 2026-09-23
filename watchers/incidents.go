@@ -193,25 +193,54 @@ func suppressNewIncident(app *model.Application, now timeseries.Time, badFuncs .
 	return true
 }
 
-// appRolloutSettling reports whether every live pod of the app started within
-// the settle window — i.e. the app was just deployed or recreated. An app with
-// no live pods is NOT settling (that can be a real outage).
+// appRolloutSettling reports whether the app is inside a rollout transition:
+// either every live pod started within the settle window (just deployed or
+// recreated), or there are NO live pods but one died within the window — the
+// delete→recreate gap, where the predecessor's teardown probe failures are
+// still recent while the replacement has not surfaced in the world yet
+// (observed 2026-09-23: "readiness probe failures killed web pods" opened 70s
+// after a delete+redeploy, between the old pod leaving and the new one
+// appearing). An app pod-less for LONGER than the window alerts normally.
+// The cost: an app whose pods all vanish at once alerts up to the settle
+// window late — pods that exist but fail (CrashLoop, not ready) are live and
+// unaffected.
 func appRolloutSettling(app *model.Application, now timeseries.Time) bool {
 	settledAt := now.Add(-newIncidentRolloutSettle)
 	live := 0
+	recentlyAlive := false
 	for _, instance := range app.Instances {
 		if instance.Pod == nil || instance.Pod.LifeSpan.IsEmpty() {
 			continue
 		}
 		if !(instance.Pod.LifeSpan.Last() > 0) {
-			continue // already gone (e.g. the rollout's predecessor)
+			// Already gone (e.g. the rollout's predecessor); a death within
+			// the settle window still marks the app as transitioning.
+			if aliveSince(instance.Pod.LifeSpan, settledAt) {
+				recentlyAlive = true
+			}
+			continue
 		}
 		live++
 		if aliveAt(instance.Pod.LifeSpan, settledAt) {
 			return false // an established pod — not a fresh rollout
 		}
 	}
-	return live > 0
+	if live == 0 {
+		return recentlyAlive
+	}
+	return true
+}
+
+// aliveSince reports whether the pod had any positive lifespan sample at or
+// after t.
+func aliveSince(ts *timeseries.TimeSeries, t timeseries.Time) bool {
+	iter := ts.IterFrom(t)
+	for iter.Next() {
+		if _, v := iter.Value(); !timeseries.IsNaN(v) && v > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // aliveAt reports whether the pod existed at time t: the last lifespan sample
