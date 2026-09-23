@@ -18,6 +18,23 @@ type Incidents struct {
 	notifier *notifications.IncidentNotifier
 }
 
+const (
+	// A NEW incident needs bad events in this recent window. The multiwindow
+	// burn rates hold boot/teardown noise for up to LongWindow after recovery,
+	// and on a near-idle app (kubelet probes are most of the traffic) that
+	// stale data alone stays above the thresholds long after everything
+	// recovered — reopening "failing startup probes" incidents on apps that
+	// have been healthy for many minutes.
+	newIncidentRecentBadWindow = 3 * timeseries.Minute
+
+	// No NEW incidents while a rollout settles: when every live pod of the
+	// app started within this window, the SLI is dominated by ordinary
+	// boot-window probe noise (connection refused until the process binds). A
+	// rollout still failing past the window opens an incident normally, and a
+	// rolling update of an app with established pods is not settling at all.
+	newIncidentRolloutSettle = 5 * timeseries.Minute
+)
+
 type IncidentRCA func(ctx context.Context, project *db.Project, world *model.World, incident *model.ApplicationIncident)
 
 func NewIncidents(db *db.DB, rca IncidentRCA) *Incidents {
@@ -83,6 +100,11 @@ func (w *Incidents) Check(project *db.Project, world *model.World) {
 		case incident == nil && status <= model.OK:
 			continue
 		case incident == nil:
+			// Only creation is gated — open incidents keep updating and
+			// resolving exactly as before.
+			if suppressNewIncident(app, now, aBadF, lBadF) {
+				continue
+			}
 			incident = &model.ApplicationIncident{
 				ApplicationId: app.Id,
 				Key:           utils.NanoId(8),
@@ -149,6 +171,63 @@ func (w *Incidents) resolveIncidentsForMissingApps(project *db.Project, world *m
 }
 
 type sumFromFunc func(from timeseries.Time) float32
+
+// suppressNewIncident reports whether a would-be NEW incident is rollout/boot
+// noise rather than an ongoing problem: either the app's rollout is still
+// settling, or nothing bad has happened recently and the burn rates are riding
+// on stale window data. A live outage has recent bad events and established
+// pods, so it opens immediately.
+func suppressNewIncident(app *model.Application, now timeseries.Time, badFuncs ...sumFromFunc) bool {
+	if appRolloutSettling(app, now) {
+		return true
+	}
+	from := now.Add(-newIncidentRecentBadWindow)
+	for _, f := range badFuncs {
+		if f == nil {
+			continue
+		}
+		if v := f(from); !timeseries.IsNaN(v) && v > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// appRolloutSettling reports whether every live pod of the app started within
+// the settle window — i.e. the app was just deployed or recreated. An app with
+// no live pods is NOT settling (that can be a real outage).
+func appRolloutSettling(app *model.Application, now timeseries.Time) bool {
+	settledAt := now.Add(-newIncidentRolloutSettle)
+	live := 0
+	for _, instance := range app.Instances {
+		if instance.Pod == nil || instance.Pod.LifeSpan.IsEmpty() {
+			continue
+		}
+		if !(instance.Pod.LifeSpan.Last() > 0) {
+			continue // already gone (e.g. the rollout's predecessor)
+		}
+		live++
+		if aliveAt(instance.Pod.LifeSpan, settledAt) {
+			return false // an established pod — not a fresh rollout
+		}
+	}
+	return live > 0
+}
+
+// aliveAt reports whether the pod existed at time t: the last lifespan sample
+// at or before t is positive.
+func aliveAt(ts *timeseries.TimeSeries, t timeseries.Time) bool {
+	iter := ts.Iter()
+	alive := false
+	for iter.Next() {
+		tt, v := iter.Value()
+		if tt.After(t) {
+			break
+		}
+		alive = !timeseries.IsNaN(v) && v > 0
+	}
+	return alive
+}
 
 func availability(ctx timeseries.Context, app *model.Application) ([]model.BurnRate, sumFromFunc, sumFromFunc) {
 	if len(app.AvailabilitySLIs) == 0 {
