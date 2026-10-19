@@ -603,11 +603,35 @@ func (api *Api) Dashboards(w http.ResponseWriter, r *http.Request, u *db.User) {
 		http.Error(w, "", http.StatusInternalServerError)
 		return
 	}
+	dashboards = api.filterDashboardsForUser(u, project.Id, dashboards)
 	utils.WriteJson(w, api.WithContext(u, project, cacheStatus, world, views.Dashboards.List(dashboards)))
+}
+
+// filterDashboardsForUser keeps only the dashboards the user is allowed to view.
+func (api *Api) filterDashboardsForUser(u *db.User, projectId db.ProjectId, dashboards []*db.Dashboard) []*db.Dashboard {
+	res := make([]*db.Dashboard, 0, len(dashboards))
+	for _, d := range dashboards {
+		if api.IsAllowed(u, rbac.Actions.Project(string(projectId)).Dashboard(d.Name).View()) {
+			res = append(res, d)
+		}
+	}
+	return res
+}
+
+// canQueryPanelData reports whether the user may run panel queries in the project.
+// Panel queries are arbitrary PromQL over the whole project, so they require
+// project-wide metrics view or permission to configure dashboards.
+func (api *Api) canQueryPanelData(u *db.User, projectId db.ProjectId) bool {
+	as := rbac.Actions.Project(string(projectId))
+	return api.IsAllowed(u, as.Metrics().View(), as.Dashboards().Edit())
 }
 
 func (api *Api) PanelData(w http.ResponseWriter, r *http.Request, u *db.User) {
 	projectId := db.ProjectId(mux.Vars(r)["project"])
+	if !api.canQueryPanelData(u, projectId) {
+		http.Error(w, "You are not allowed to query metrics in this project.", http.StatusForbidden)
+		return
+	}
 	project, err := api.db.GetProject(projectId)
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound) {
