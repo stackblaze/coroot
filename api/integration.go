@@ -285,12 +285,10 @@ func incidentUrl(basePath, projectId, key string) string {
 }
 
 // parseNamespacesQuery splits a comma-separated namespaces= query into a set of
-// lowercased namespace names. Empty input means "no restriction".
+// lowercased namespace names. Empty or missing input yields an empty set: the
+// integration endpoints treat namespaces= as an explicit allowlist, so no
+// namespaces means no applications.
 func parseNamespacesQuery(raw string) map[string]bool {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil
-	}
 	out := map[string]bool{}
 	for _, part := range strings.Split(raw, ",") {
 		ns := strings.ToLower(strings.TrimSpace(part))
@@ -298,17 +296,15 @@ func parseNamespacesQuery(raw string) map[string]bool {
 			out[ns] = true
 		}
 	}
-	if len(out) == 0 {
-		return nil
-	}
 	return out
 }
 
 // worldWithNamespaces returns a shallow copy of w whose Applications map
-// contains only apps in the given namespaces. nil/empty allowlist = all apps.
+// contains only apps in the given namespaces. An empty allowlist yields a
+// world with no applications.
 func worldWithNamespaces(w *model.World, namespaces map[string]bool) *model.World {
-	if w == nil || len(namespaces) == 0 {
-		return w
+	if w == nil {
+		return nil
 	}
 	cp := *w
 	cp.Applications = map[model.ApplicationId]*model.Application{}
@@ -353,8 +349,9 @@ func (e integrationBadRequest) Error() string { return string(e) }
 func errIntegrationBadRequest(msg string) error { return integrationBadRequest(msg) }
 
 // IntegrationOverviewApplications returns the Coroot applications overview for
-// trusted S2S callers (Kubero Observability page). Optional namespaces= filters
-// to those Kubernetes namespaces only.
+// trusted S2S callers (Kubero Observability page). namespaces= is a required
+// allowlist of Kubernetes namespaces; when it is empty or missing, no
+// applications are returned.
 //
 // GET /api/integration/overview/applications?project=&from=&to=&namespaces=
 func (api *Api) IntegrationOverviewApplications(w http.ResponseWriter, r *http.Request) {
@@ -389,8 +386,9 @@ func (api *Api) IntegrationOverviewApplications(w http.ResponseWriter, r *http.R
 }
 
 // IntegrationOverviewLogs returns project-wide log search + histogram for
-// trusted S2S callers (Kubero Logs page). When namespaces= is set, ClickHouse
-// queries are restricted to services of apps in those namespaces.
+// trusted S2S callers (Kubero Logs page). ClickHouse queries are always
+// restricted to services of apps in the namespaces= allowlist; when it is empty
+// or missing, no logs are returned.
 //
 // GET /api/integration/overview/logs?project=&from=&to=&query=&namespaces=
 func (api *Api) IntegrationOverviewLogs(w http.ResponseWriter, r *http.Request) {
@@ -416,12 +414,7 @@ func (api *Api) IntegrationOverviewLogs(w http.ResponseWriter, r *http.Request) 
 		query = `{"view":"messages","agent":true,"otel":true,"limit":100,"filters":[]}`
 	}
 
-	renderWorld := world
-	restrictTelemetry := false
-	if len(namespaces) > 0 {
-		renderWorld = worldWithNamespaces(world, namespaces)
-		restrictTelemetry = true
-	}
+	renderWorld := worldWithNamespaces(world, namespaces)
 	auditor.Audit(renderWorld, project, nil, nil)
 
 	chs := api.GetClickhouseClients(project)
@@ -431,7 +424,7 @@ func (api *Api) IntegrationOverviewLogs(w http.ResponseWriter, r *http.Request) 
 	}
 
 	ov := views.Overview(r.Context(), chs, project, renderWorld, "logs", query, views.OverviewOpts{
-		RestrictTelemetry: restrictTelemetry,
+		RestrictTelemetry: true,
 		FullWorld:         world,
 	})
 	utils.WriteJson(w, map[string]any{"logs": ov.Logs})

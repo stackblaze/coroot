@@ -139,8 +139,11 @@ func TestIntegrationAppIncidentAcceptsBearer(t *testing.T) {
 }
 
 func TestParseNamespacesQuery(t *testing.T) {
-	if parseNamespacesQuery("") != nil {
-		t.Fatal("empty should be nil")
+	for _, raw := range []string{"", "   ", ",", " , ,"} {
+		got := parseNamespacesQuery(raw)
+		if got == nil || len(got) != 0 {
+			t.Fatalf("parseNamespacesQuery(%q) = %#v, want an empty non-nil set", raw, got)
+		}
 	}
 	got := parseNamespacesQuery(" Foo-Bar , baz ")
 	if !got["foo-bar"] || !got["baz"] || len(got) != 2 {
@@ -159,8 +162,28 @@ func TestWorldWithNamespaces(t *testing.T) {
 	if len(filtered.Applications) != 1 {
 		t.Fatalf("expected 1 app, got %d", len(filtered.Applications))
 	}
-	if worldWithNamespaces(w, nil) != w {
-		t.Fatal("nil allowlist should return original world")
+	if len(w.Applications) != 2 {
+		t.Fatal("the original world must not be modified")
+	}
+	for _, ns := range []map[string]bool{nil, {}, parseNamespacesQuery("")} {
+		empty := worldWithNamespaces(w, ns)
+		if empty == w {
+			t.Fatal("an empty allowlist must not return the original world")
+		}
+		if len(empty.Applications) != 0 {
+			t.Fatalf("an empty allowlist must yield no applications, got %d", len(empty.Applications))
+		}
+	}
+	if worldWithNamespaces(nil, map[string]bool{"ns-a": true}) != nil {
+		t.Fatal("a nil world should stay nil")
+	}
+}
+
+func TestWorldWithNamespacesIsCaseInsensitive(t *testing.T) {
+	id := model.NewApplicationId("", "NS-A", model.ApplicationKindDeployment, "a")
+	w := &model.World{Applications: map[model.ApplicationId]*model.Application{id: {Id: id}}}
+	if got := worldWithNamespaces(w, parseNamespacesQuery("ns-a")); len(got.Applications) != 1 {
+		t.Fatalf("expected 1 app, got %d", len(got.Applications))
 	}
 }
 
