@@ -10,7 +10,9 @@ type nodeConsumers struct {
 	memory map[string]model.SeriesData
 }
 
-func getNodeConsumers(node *model.Node) *nodeConsumers {
+const otherConsumers = "other"
+
+func getNodeConsumers(node *model.Node, visible func(*model.Application) bool) *nodeConsumers {
 	nc := &nodeConsumers{
 		cpu:    map[string]model.SeriesData{},
 		memory: map[string]model.SeriesData{},
@@ -18,6 +20,9 @@ func getNodeConsumers(node *model.Node) *nodeConsumers {
 	for _, i := range node.Instances {
 		for _, c := range i.Containers {
 			app := i.Owner.Id.Name
+			if visible != nil && !visible(i.Owner) {
+				app = otherConsumers
+			}
 			if nc.cpu[app] == nil {
 				nc.cpu[app] = timeseries.NewAggregate(timeseries.NanSum)
 			}
@@ -31,14 +36,17 @@ func getNodeConsumers(node *model.Node) *nodeConsumers {
 	return nc
 }
 
-type nodeConsumersByNode map[string]*nodeConsumers
+type nodeConsumersByNode struct {
+	visible func(*model.Application) bool
+	byNode  map[string]*nodeConsumers
+}
 
 func (m nodeConsumersByNode) get(node *model.Node) *nodeConsumers {
 	name := node.GetName()
-	ncs := m[name]
+	ncs := m.byNode[name]
 	if ncs == nil {
-		ncs = getNodeConsumers(node)
-		m[name] = ncs
+		ncs = getNodeConsumers(node, m.visible)
+		m.byNode[name] = ncs
 	}
 	return ncs
 }

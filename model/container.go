@@ -102,6 +102,47 @@ func guessService(services []string, appId ApplicationId) string {
 	return ""
 }
 
+// guessServiceExact is a strict variant of guessService: a service matches
+// only when it equals the application name, or is the application's exact
+// /k8s/<namespace>/<name> (or /k8s-cronjob/...) path. Suffix matches are not
+// considered.
+func guessServiceExact(services []string, appId ApplicationId) string {
+	for _, s := range services {
+		if s == appId.Name {
+			return s
+		}
+	}
+	for _, s := range services {
+		parts := strings.Split(s, "/")
+		if len(parts) == 4 && (parts[1] == "k8s" || parts[1] == "k8s-cronjob") && parts[2] == appId.Namespace && parts[3] == appId.Name {
+			return s
+		}
+	}
+	return ""
+}
+
+// GuessServiceExact resolves the application's service using exact matching
+// only, and only when no other application in w resolves to the same service.
+// It is used where the result scopes which telemetry a user may read.
+func GuessServiceExact(services []string, w *World, app *Application) string {
+	service := guessServiceExact(services, app.Id)
+	if service == "" {
+		return ""
+	}
+	if w == nil {
+		return service
+	}
+	for id := range w.Applications {
+		if app.Id == id {
+			continue
+		}
+		if guessServiceExact(services, id) == service || guessService(services, id) == service {
+			return ""
+		}
+	}
+	return service
+}
+
 func GuessService(services []string, w *World, app *Application) string {
 	service := guessService(services, app.Id)
 	if service == "" {

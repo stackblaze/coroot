@@ -139,8 +139,11 @@ func TestIntegrationAppIncidentAcceptsBearer(t *testing.T) {
 }
 
 func TestParseNamespacesQuery(t *testing.T) {
-	if parseNamespacesQuery("") != nil {
-		t.Fatal("empty should be nil")
+	for _, raw := range []string{"", "   ", ",", " , ,"} {
+		got := parseNamespacesQuery(raw)
+		if got == nil || len(got) != 0 {
+			t.Fatalf("parseNamespacesQuery(%q) = %#v, want an empty non-nil set", raw, got)
+		}
 	}
 	got := parseNamespacesQuery(" Foo-Bar , baz ")
 	if !got["foo-bar"] || !got["baz"] || len(got) != 2 {
@@ -159,8 +162,28 @@ func TestWorldWithNamespaces(t *testing.T) {
 	if len(filtered.Applications) != 1 {
 		t.Fatalf("expected 1 app, got %d", len(filtered.Applications))
 	}
-	if worldWithNamespaces(w, nil) != w {
-		t.Fatal("nil allowlist should return original world")
+	if len(w.Applications) != 2 {
+		t.Fatal("the original world must not be modified")
+	}
+	for _, ns := range []map[string]bool{nil, {}, parseNamespacesQuery("")} {
+		empty := worldWithNamespaces(w, ns)
+		if empty == w {
+			t.Fatal("an empty allowlist must not return the original world")
+		}
+		if len(empty.Applications) != 0 {
+			t.Fatalf("an empty allowlist must yield no applications, got %d", len(empty.Applications))
+		}
+	}
+	if worldWithNamespaces(nil, map[string]bool{"ns-a": true}) != nil {
+		t.Fatal("a nil world should stay nil")
+	}
+}
+
+func TestWorldWithNamespacesIsCaseInsensitive(t *testing.T) {
+	id := model.NewApplicationId("", "NS-A", model.ApplicationKindDeployment, "a")
+	w := &model.World{Applications: map[model.ApplicationId]*model.Application{id: {Id: id}}}
+	if got := worldWithNamespaces(w, parseNamespacesQuery("ns-a")); len(got.Applications) != 1 {
+		t.Fatalf("expected 1 app, got %d", len(got.Applications))
 	}
 }
 
@@ -218,5 +241,90 @@ func TestIntegrationStatusRequiresProject(t *testing.T) {
 	integrationTestApi("s3cret").IntegrationStatus(w, r)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestIntegrationResolveIncidentRequiresSecret(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/api/integration/incident/resolve?project=p&application=ns:Deployment:app", nil)
+	r.Header.Set("X-Handoff-Secret", "nope")
+	w := httptest.NewRecorder()
+	integrationTestApi("s3cret").IntegrationResolveIncident(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestIntegrationResolveIncidentValidatesParams(t *testing.T) {
+	cases := map[string]string{
+		"missing both":           "/api/integration/incident/resolve",
+		"missing application":    "/api/integration/incident/resolve?project=p",
+		"missing project":        "/api/integration/incident/resolve?application=ns:Deployment:app",
+		"invalid application id": "/api/integration/incident/resolve?project=p&application=garbage",
+	}
+	for name, target := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, target, nil)
+			r.Header.Set("X-Handoff-Secret", "s3cret")
+			w := httptest.NewRecorder()
+			// A nil db would panic, so reaching 400 also proves we reject before any write.
+			integrationTestApi("s3cret").IntegrationResolveIncident(w, r)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("expected 400, got %d", w.Code)
+			}
+		})
+	}
+}
+
+func TestIntegrationResolveIncidentRequiresSelector(t *testing.T) {
+	cases := map[string]string{
+		"no selector":          "/api/integration/incident/resolve?project=p",
+		"namespace only":       "/api/integration/incident/resolve?project=p&namespace=ns",
+		"contains only":        "/api/integration/incident/resolve?project=p&contains=valkey",
+		"namespace no project": "/api/integration/incident/resolve?namespace=ns&contains=valkey",
+	}
+	for name, target := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, target, nil)
+			r.Header.Set("X-Handoff-Secret", "s3cret")
+			w := httptest.NewRecorder()
+			// A nil db would panic, so reaching 400 also proves we reject before any write.
+			integrationTestApi("s3cret").IntegrationResolveIncident(w, r)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("expected 400, got %d", w.Code)
+			}
+		})
+	}
+}
+
+func TestIntegrationSetLatencySLORequiresSecret(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/api/integration/check_config/latency?project=p&application=ns:StatefulSet:rfr-x&objective_bucket=10&objective_percentage=99", nil)
+	r.Header.Set("X-Handoff-Secret", "nope")
+	w := httptest.NewRecorder()
+	integrationTestApi("s3cret").IntegrationSetLatencySLO(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestIntegrationSetLatencySLOValidatesParams(t *testing.T) {
+	cases := map[string]string{
+		"missing application":    "/api/integration/check_config/latency?project=p&objective_bucket=10&objective_percentage=99",
+		"invalid application id": "/api/integration/check_config/latency?project=p&application=garbage&objective_bucket=10&objective_percentage=99",
+		"missing bucket":         "/api/integration/check_config/latency?project=p&application=ns:StatefulSet:rfr-x&objective_percentage=99",
+		"zero bucket":            "/api/integration/check_config/latency?project=p&application=ns:StatefulSet:rfr-x&objective_bucket=0&objective_percentage=99",
+		"percentage over 100":    "/api/integration/check_config/latency?project=p&application=ns:StatefulSet:rfr-x&objective_bucket=10&objective_percentage=101",
+		"non-numeric":            "/api/integration/check_config/latency?project=p&application=ns:StatefulSet:rfr-x&objective_bucket=ten&objective_percentage=99",
+	}
+	for name, target := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, target, nil)
+			r.Header.Set("X-Handoff-Secret", "s3cret")
+			w := httptest.NewRecorder()
+			// A nil db would panic, so reaching 400 also proves we reject before any write.
+			integrationTestApi("s3cret").IntegrationSetLatencySLO(w, r)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("expected 400, got %d", w.Code)
+			}
+		})
 	}
 }

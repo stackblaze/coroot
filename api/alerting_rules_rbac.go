@@ -14,16 +14,15 @@ import (
 // user may manage alerting rules for. restricted is false for project-wide
 // roles (Admin, Editor, Viewer, etc.).
 func (api *Api) restrictedNamespaces(u *db.User, projectId string, w *model.World) (namespaces []string, restricted bool) {
-	if u == nil || w == nil {
-		return nil, false
-	}
-	if !api.hasRestrictedAppAccess(u, projectId, w) {
+	if !api.hasRestrictedAppAccess(u, projectId) {
 		return nil, false
 	}
 	set := map[string]struct{}{}
-	for _, app := range w.Applications {
-		if api.canViewApplication(u, projectId, app) {
-			set[app.Id.Namespace] = struct{}{}
+	if w != nil {
+		for _, app := range w.Applications {
+			if api.canViewApplication(u, projectId, app) {
+				set[app.Id.Namespace] = struct{}{}
+			}
 		}
 	}
 	// Supplement from role permissions so users can create rules before any
@@ -103,18 +102,17 @@ func (api *Api) canAccessAlertingRule(u *db.User, projectId string, w *model.Wor
 			return false
 		}
 	}
-	for _, app := range w.Applications {
-		if rule.Matches(app) && !api.canViewApplication(u, projectId, app) {
-			return false
+	if w != nil {
+		for _, app := range w.Applications {
+			if rule.Matches(app) && !api.canViewApplication(u, projectId, app) {
+				return false
+			}
 		}
 	}
 	return true
 }
 
 func (api *Api) filterAlertingRules(u *db.User, projectId string, w *model.World, rules []*model.AlertingRule) []*model.AlertingRule {
-	if w == nil {
-		return rules
-	}
 	if _, restricted := api.restrictedNamespaces(u, projectId, w); !restricted {
 		return rules
 	}

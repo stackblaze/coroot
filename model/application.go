@@ -106,6 +106,24 @@ func (app *Application) OtelLogService(candidates []string, w *World) string {
 	return GuessService(candidates, w, app)
 }
 
+// RestrictedOtelLogService is like OtelLogService but only returns a service
+// that is explicitly configured for the application or matches it exactly.
+func (app *Application) RestrictedOtelLogService(candidates []string, w *World) string {
+	if app.Settings != nil && app.Settings.Logs != nil {
+		return app.Settings.Logs.Service
+	}
+	return GuessServiceExact(candidates, w, app)
+}
+
+// RestrictedOtelTraceService returns the explicitly configured tracing service
+// of the application, or one that matches it exactly.
+func (app *Application) RestrictedOtelTraceService(candidates []string, w *World) string {
+	if app.Settings != nil && app.Settings.Tracing != nil {
+		return app.Settings.Tracing.Service
+	}
+	return GuessServiceExact(candidates, w, app)
+}
+
 func (app *Application) LogQueryServices(source LogSource, otelService string) []string {
 	switch source {
 	case LogSourceOtel:

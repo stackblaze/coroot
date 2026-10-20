@@ -90,3 +90,38 @@ func (ps PermissionSet) AllowsForObjects(action Action) []Object {
 	}
 	return objects
 }
+
+var applicationObjectKeys = []string{
+	"application_category",
+	"application_namespace",
+	"application_kind",
+	"application_name",
+}
+
+// RestrictsApplicationView reports whether the permission set limits which
+// applications of the project can be viewed. It is true when any permission
+// granting application view in the project is narrowed to specific
+// categories, namespaces, kinds or names, or when no permission grants
+// project-wide application view. The result depends only on the permissions,
+// never on which applications currently exist.
+func (ps PermissionSet) RestrictsApplicationView(projectId string) bool {
+	projectWide := false
+	for _, p := range ps {
+		if !utils.GlobMatch(string(ScopeApplication), string(p.Scope)) {
+			continue
+		}
+		if !utils.GlobMatch(string(ActionView), string(p.Action)) {
+			continue
+		}
+		if pid, ok := p.Object["project_id"]; ok && (pid == "" || !utils.GlobMatch(projectId, pid)) {
+			continue
+		}
+		for _, k := range applicationObjectKeys {
+			if v, ok := p.Object[k]; ok && v != "*" {
+				return true
+			}
+		}
+		projectWide = true
+	}
+	return !projectWide
+}

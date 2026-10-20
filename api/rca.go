@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/coroot/coroot/clickhouse"
@@ -20,6 +21,11 @@ func (api *Api) RCA(w http.ResponseWriter, r *http.Request, u *db.User) {
 	projectId := db.ProjectId(mux.Vars(r)["project"])
 	q := r.URL.Query()
 	from, to, incident, _ := api.getTimeContext(projectId, q.Get("from"), q.Get("to"), q.Get("incident"), q.Get("alert"))
+
+	if status, msg := api.checkRCAAccess(r, u, projectId, incident, from, to); status != http.StatusOK {
+		http.Error(w, msg, status)
+		return
+	}
 
 	defer func() {
 		if incident != nil {
@@ -180,6 +186,48 @@ func (api *Api) RCA(w http.ResponseWriter, r *http.Request, u *db.User) {
 	}
 	rca = rcaResponse
 	rca.Status = "OK"
+}
+
+// checkRCAAccess verifies that the user may view the application and that the
+// incident, if any, belongs to it. It returns http.StatusOK when allowed.
+func (api *Api) checkRCAAccess(r *http.Request, u *db.User, projectId db.ProjectId, incident *model.ApplicationIncident, from, to timeseries.Time) (int, string) {
+	appId, err := GetApplicationId(r)
+	if err != nil {
+		return http.StatusBadRequest, "invalid application id"
+	}
+	if q := r.URL.Query().Get("incident"); q != "" && incident == nil {
+		return http.StatusNotFound, "Incident not found"
+	}
+	if incident != nil && !sameApplication(incident.ApplicationId, appId) {
+		return http.StatusNotFound, "Incident not found"
+	}
+	project, err := api.db.GetProject(projectId)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return http.StatusNotFound, "Project not found"
+		}
+		klog.Errorln(err)
+		return http.StatusInternalServerError, ""
+	}
+	world, _, err := api.LoadWorld(r.Context(), project, from, to)
+	if err != nil {
+		klog.Errorln(err)
+		return http.StatusInternalServerError, ""
+	}
+	if !api.canViewApplicationId(u, string(projectId), world, appId, "") {
+		return http.StatusForbidden, "You are not allowed to view this application."
+	}
+	return http.StatusOK, ""
+}
+
+// sameApplication compares application ids, ignoring the cluster id when one
+// of them does not carry it.
+func sameApplication(a, b model.ApplicationId) bool {
+	known := func(clusterId string) bool { return clusterId != "" && clusterId != "_" }
+	if known(a.ClusterId) && known(b.ClusterId) && a.ClusterId != b.ClusterId {
+		return false
+	}
+	return a.Namespace == b.Namespace && a.Kind == b.Kind && a.Name == b.Name
 }
 
 func (api *Api) IncidentRCA(ctx context.Context, project *db.Project, world *model.World, incident *model.ApplicationIncident) {

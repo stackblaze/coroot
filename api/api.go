@@ -15,6 +15,7 @@ import (
 
 	"github.com/coroot/coroot/api/forms"
 	"github.com/coroot/coroot/api/views"
+	"github.com/coroot/coroot/api/views/overview"
 	"github.com/coroot/coroot/auditor"
 	"github.com/coroot/coroot/cache"
 	"github.com/coroot/coroot/ch"
@@ -285,7 +286,7 @@ func (api *Api) Roles(w http.ResponseWriter, r *http.Request, u *db.User) {
 		http.Error(w, "", http.StatusInternalServerError)
 		return
 	}
-	utils.WriteJson(w, views.Roles(roles))
+	utils.WriteJson(w, views.Roles(api.listableRoles(u, roles)))
 }
 
 func (api *Api) SSO(w http.ResponseWriter, r *http.Request, u *db.User) {
@@ -301,7 +302,7 @@ func (api *Api) SSO(w http.ResponseWriter, r *http.Request, u *db.User) {
 	}{
 		DefaultRole: rbac.RoleViewer,
 	}
-	for _, role := range roles {
+	for _, role := range api.visibleRoles(u, roles) {
 		res.Roles = append(res.Roles, role.Name)
 	}
 	utils.WriteJson(w, res)
@@ -315,6 +316,12 @@ func (api *Api) Project(w http.ResponseWriter, r *http.Request, u *db.User) {
 
 	switch r.Method {
 	case http.MethodGet:
+		if projectId != "" && !api.IsAllowed(u, rbac.Actions.Project(projectId).List()...) {
+			http.Error(w, "You are not allowed to view this project.", http.StatusForbidden)
+			return
+		}
+		// Users limited to some applications only see the requested project.
+		limited := !isAllowed && api.hasRestrictedAccessInAnyProject(u)
 		type ProjectSettings struct {
 			Readonly          bool                `json:"readonly"`
 			Name              string              `json:"name"`
@@ -331,6 +338,9 @@ func (api *Api) Project(w http.ResponseWriter, r *http.Request, u *db.User) {
 		}
 		res := ProjectSettings{}
 		for _, p := range projects {
+			if limited {
+				break
+			}
 			if p.Id != db.ProjectId(projectId) && !p.Multicluster() {
 				res.AvailableProjects = append(res.AvailableProjects, p.Name)
 			}
@@ -350,7 +360,9 @@ func (api *Api) Project(w http.ResponseWriter, r *http.Request, u *db.User) {
 			res.Readonly = project.Settings.Readonly
 			res.Name = project.Name
 			res.RefreshInterval = prometheusCfg.RefreshInterval
-			res.MemberProjects = project.Settings.MemberProjects
+			if !limited {
+				res.MemberProjects = project.Settings.MemberProjects
+			}
 			if isAllowed {
 				res.ApiKeys = project.Settings.ApiKeys
 			} else {
@@ -516,7 +528,7 @@ func (api *Api) Overview(w http.ResponseWriter, r *http.Request, u *db.User) {
 	auditor.Audit(world, project, nil, nil)
 	renderWorld := world
 	restrictTelemetry := false
-	restricted := api.hasRestrictedAppAccess(u, projectId, world)
+	restricted := api.hasRestrictedAppAccess(u, projectId)
 	if restricted && (view == "logs" || view == "traces" || view == "risks") {
 		renderWorld = api.worldWithViewableApps(u, projectId, world)
 		restrictTelemetry = view == "logs" || view == "traces"
@@ -603,11 +615,35 @@ func (api *Api) Dashboards(w http.ResponseWriter, r *http.Request, u *db.User) {
 		http.Error(w, "", http.StatusInternalServerError)
 		return
 	}
+	dashboards = api.filterDashboardsForUser(u, project.Id, dashboards)
 	utils.WriteJson(w, api.WithContext(u, project, cacheStatus, world, views.Dashboards.List(dashboards)))
+}
+
+// filterDashboardsForUser keeps only the dashboards the user is allowed to view.
+func (api *Api) filterDashboardsForUser(u *db.User, projectId db.ProjectId, dashboards []*db.Dashboard) []*db.Dashboard {
+	res := make([]*db.Dashboard, 0, len(dashboards))
+	for _, d := range dashboards {
+		if api.IsAllowed(u, rbac.Actions.Project(string(projectId)).Dashboard(d.Name).View()) {
+			res = append(res, d)
+		}
+	}
+	return res
+}
+
+// canQueryPanelData reports whether the user may run panel queries in the project.
+// Panel queries are arbitrary PromQL over the whole project, so they require
+// project-wide metrics view or permission to configure dashboards.
+func (api *Api) canQueryPanelData(u *db.User, projectId db.ProjectId) bool {
+	as := rbac.Actions.Project(string(projectId))
+	return api.IsAllowed(u, as.Metrics().View(), as.Dashboards().Edit())
 }
 
 func (api *Api) PanelData(w http.ResponseWriter, r *http.Request, u *db.User) {
 	projectId := db.ProjectId(mux.Vars(r)["project"])
+	if !api.canQueryPanelData(u, projectId) {
+		http.Error(w, "You are not allowed to query metrics in this project.", http.StatusForbidden)
+		return
+	}
 	project, err := api.db.GetProject(projectId)
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound) {
@@ -766,6 +802,7 @@ func (api *Api) Inspections(w http.ResponseWriter, r *http.Request, u *db.User) 
 			return
 		}
 	}
+	checkConfigs = api.filterCheckConfigs(u, project, world, checkConfigs)
 	utils.WriteJson(w, api.WithContext(u, project, cacheStatus, world, views.Inspections(checkConfigs)))
 }
 
@@ -820,6 +857,10 @@ func (api *Api) ApplicationCategories(w http.ResponseWriter, r *http.Request, u 
 		return
 	}
 
+	if !api.canReadProjectConfig(u, projectId, rbac.Actions.Project(projectId).ApplicationCategories().Edit()) {
+		http.Error(w, "You are not allowed to view application categories.", http.StatusForbidden)
+		return
+	}
 	categories := project.GetApplicationCategories()
 	if !r.URL.Query().Has("name") {
 		cs := maps.Values(categories)
@@ -880,6 +921,10 @@ func (api *Api) CustomApplications(w http.ResponseWriter, r *http.Request, u *db
 		}
 		return
 	}
+	if !api.canReadProjectConfig(u, projectId, rbac.Actions.Project(projectId).CustomApplications().Edit()) {
+		http.Error(w, "You are not allowed to view custom applications.", http.StatusForbidden)
+		return
+	}
 	utils.WriteJson(w, views.CustomApplications(project))
 }
 
@@ -894,6 +939,10 @@ func (api *Api) CustomCloudPricing(w http.ResponseWriter, r *http.Request, u *db
 		return
 	}
 	if r.Method == http.MethodGet {
+		if !api.canReadProjectConfig(u, projectId, rbac.Actions.Project(projectId).CustomCloudPricing().Edit()) {
+			http.Error(w, "You are not allowed to view custom cloud pricing.", http.StatusForbidden)
+			return
+		}
 		utils.WriteJson(w, p.Settings.CustomCloudPricing)
 		return
 	}
@@ -946,6 +995,10 @@ func (api *Api) Integrations(w http.ResponseWriter, r *http.Request, u *db.User)
 		return
 	}
 
+	if !api.canReadProjectConfig(u, projectId, rbac.Actions.Project(projectId).Integrations().Edit()) {
+		http.Error(w, "You are not allowed to view integrations.", http.StatusForbidden)
+		return
+	}
 	project, err := api.db.GetProject(db.ProjectId(projectId))
 	if err != nil {
 		klog.Errorln(err)
@@ -984,6 +1037,14 @@ func (api *Api) Integration(w http.ResponseWriter, r *http.Request, u *db.User) 
 	isAllowed := api.IsAllowed(u, rbac.Actions.Project(projectId).Integrations().Edit())
 
 	if r.Method == http.MethodGet {
+		if t == db.IntegrationTypeWebhook && !isAllowed {
+			http.Error(w, "You are not allowed to view this integration.", http.StatusForbidden)
+			return
+		}
+		if !isAllowed && !api.canReadProjectConfig(u, projectId, rbac.Actions.Project(projectId).Integrations().Edit()) {
+			http.Error(w, "You are not allowed to view this integration.", http.StatusForbidden)
+			return
+		}
 		form.Get(project, !isAllowed)
 		switch t {
 		case db.IntegrationTypeAWS:
@@ -1077,6 +1138,10 @@ func (api *Api) Integration(w http.ResponseWriter, r *http.Request, u *db.User) 
 func (api *Api) Prom(w http.ResponseWriter, r *http.Request, u *db.User) {
 	vars := mux.Vars(r)
 	projectId := vars["project"]
+	if !api.canQueryPanelData(u, db.ProjectId(projectId)) {
+		http.Error(w, "You are not allowed to query metrics in this project.", http.StatusForbidden)
+		return
+	}
 	project, err := api.db.GetProject(db.ProjectId(projectId))
 	if err != nil {
 		klog.Errorln(err)
@@ -1109,6 +1174,10 @@ func (api *Api) Prom(w http.ResponseWriter, r *http.Request, u *db.User) {
 		if !ok {
 			klog.Warningln("project not found:", ds)
 			http.Error(w, "", http.StatusBadRequest)
+			return
+		}
+		if !api.canQueryPanelData(u, p.Id) {
+			http.Error(w, "You are not allowed to query metrics in this project.", http.StatusForbidden)
 			return
 		}
 		c, err = prom.NewClient(p.PrometheusConfig(api.globalPrometheus), p.ClickHouseConfig(api.globalClickHouse))
@@ -1171,7 +1240,7 @@ func (api *Api) Application(w http.ResponseWriter, r *http.Request, u *db.User) 
 
 	loadDbChangeEvents(r.Context(), api, project, app, world)
 
-	auditor.Audit(world, project, app, nil)
+	auditor.AuditWithVisibility(world, project, app, nil, api.consumerVisibility(u, projectId))
 
 	app.AddReport(model.AuditReportProfiling, &model.Widget{Profiling: &model.Profiling{ApplicationId: app.Id}, Width: "100%"})
 	app.AddReport(model.AuditReportTracing, &model.Widget{Tracing: &model.Tracing{ApplicationId: app.Id}, Width: "100%"})
@@ -1219,7 +1288,7 @@ func (api *Api) Incidents(w http.ResponseWriter, r *http.Request, u *db.User) {
 		utils.WriteJson(w, api.WithContext(u, project, cacheStatus, world, nil))
 		return
 	}
-	if api.hasRestrictedAppAccess(u, string(projectId), world) {
+	if api.hasRestrictedAppAccess(u, string(projectId)) {
 		filtered := incidents[:0]
 		for _, i := range incidents {
 			app := world.GetApplication(i.ApplicationId)
@@ -1274,7 +1343,7 @@ func (api *Api) Incident(w http.ResponseWriter, r *http.Request, u *db.User) {
 		http.Error(w, "You are not allowed to view this application.", http.StatusForbidden)
 		return
 	}
-	auditor.Audit(world, project, app, nil)
+	auditor.AuditWithVisibility(world, project, app, nil, api.consumerVisibility(u, projectId))
 	utils.WriteJson(w, api.WithContext(u, project, cacheStatus, world, views.Incident(world, app, incident)))
 }
 
@@ -1331,7 +1400,7 @@ func (api *Api) Alerts(w http.ResponseWriter, r *http.Request, u *db.User) {
 	}
 
 	limit, offset := query.Limit, query.Offset
-	restricted := api.hasRestrictedAppAccess(u, string(projectId), world)
+	restricted := api.hasRestrictedAppAccess(u, string(projectId))
 	if restricted {
 		// Fetch a wide page, then filter + re-paginate in memory for namespace RBAC.
 		query.Limit = 10000
@@ -1415,13 +1484,16 @@ func (api *Api) Alert(w http.ResponseWriter, r *http.Request, u *db.User) {
 		return
 	}
 
-	app := world.GetApplication(a.ApplicationId)
+	if !api.canViewAlert(u, string(projectId), world, a) {
+		http.Error(w, "You are not allowed to view this application.", http.StatusForbidden)
+		return
+	}
+	var app *model.Application
+	if world != nil {
+		app = world.GetApplication(a.ApplicationId)
+	}
 	if app != nil {
-		if !api.IsAllowed(u, rbac.Actions.Project(string(projectId)).Application(app.Category, app.Id.Namespace, app.Id.Kind, app.Id.Name).View()) {
-			http.Error(w, "You are not allowed to view this application.", http.StatusForbidden)
-			return
-		}
-		auditor.Audit(world, project, app, nil)
+		auditor.AuditWithVisibility(world, project, app, nil, api.consumerVisibility(u, string(projectId)))
 	}
 	chs := api.GetClickhouseClients(project)
 	defer chs.Close()
@@ -1954,6 +2026,10 @@ func (api *Api) Inspection(w http.ResponseWriter, r *http.Request, u *db.User) {
 		} else {
 			category = project.CalcApplicationCategory(appId)
 		}
+		if !api.canViewApplicationId(u, projectId, world, appId, category) {
+			http.Error(w, "You are not allowed to view this application.", http.StatusForbidden)
+			return
+		}
 	}
 
 	switch r.Method {
@@ -2109,6 +2185,10 @@ func (api *Api) Instrumentation(w http.ResponseWriter, r *http.Request, u *db.Us
 		http.Error(w, "Application not found", http.StatusNotFound)
 		return
 	}
+	if !api.canViewApplication(u, projectId, app) {
+		http.Error(w, "You are not allowed to view this application.", http.StatusForbidden)
+		return
+	}
 
 	isAllowed := api.IsAllowed(u, rbac.Actions.Project(projectId).Instrumentations().Edit())
 
@@ -2219,6 +2299,10 @@ func (api *Api) Profiling(w http.ResponseWriter, r *http.Request, u *db.User) {
 		http.Error(w, "Application not found", http.StatusNotFound)
 		return
 	}
+	if !api.canViewApplication(u, projectId, app) {
+		http.Error(w, "You are not allowed to view this application.", http.StatusForbidden)
+		return
+	}
 	var ch *clickhouse.Client
 	if ch, err = api.GetClickhouseClient(project, app.Id.ClusterId); err != nil {
 		klog.Warningln(err)
@@ -2227,7 +2311,11 @@ func (api *Api) Profiling(w http.ResponseWriter, r *http.Request, u *db.User) {
 	}
 	defer ch.Close()
 	q := r.URL.Query()
-	utils.WriteJson(w, api.WithContext(u, project, cacheStatus, world, views.Profiling(r.Context(), ch, app, q, world)))
+	res := views.Profiling(r.Context(), ch, app, q, world)
+	if api.hasRestrictedAppAccess(u, projectId) {
+		limitProfilingServices(res)
+	}
+	utils.WriteJson(w, api.WithContext(u, project, cacheStatus, world, res))
 }
 
 func (api *Api) Tracing(w http.ResponseWriter, r *http.Request, u *db.User) {
@@ -2302,7 +2390,18 @@ func (api *Api) Tracing(w http.ResponseWriter, r *http.Request, u *db.User) {
 		return
 	}
 	defer ch.Close()
-	utils.WriteJson(w, api.WithContext(u, project, cacheStatus, world, views.Tracing(r.Context(), ch, app, q, world)))
+	var allowService func(string) bool
+	restricted := api.hasRestrictedAppAccess(u, projectId)
+	if restricted {
+		viewable := api.worldWithViewableApps(u, projectId, world)
+		allowed := utils.NewStringSet(overview.TraceServicesForApps(r.Context(), clickhouse.Clients{Clients: []*clickhouse.Client{ch}}, viewable, world)...)
+		allowService = allowed.Has
+	}
+	res := views.Tracing(r.Context(), ch, app, q, world, allowService)
+	if restricted {
+		limitTraceServices(res, allowService)
+	}
+	utils.WriteJson(w, api.WithContext(u, project, cacheStatus, world, res))
 }
 
 func (api *Api) Logs(w http.ResponseWriter, r *http.Request, u *db.User) {
@@ -2376,6 +2475,9 @@ func (api *Api) Logs(w http.ResponseWriter, r *http.Request, u *db.User) {
 	defer ch.Close()
 	q := r.URL.Query()
 	res := views.Logs(r.Context(), ch, app, q, world)
+	if api.hasRestrictedAppAccess(u, projectId) {
+		limitLogServices(res)
+	}
 	if chErr != nil {
 		res.Message = "Failed to load logs: ClickHouse is not available"
 	}
@@ -2499,7 +2601,7 @@ func (api *Api) Node(w http.ResponseWriter, r *http.Request, u *db.User) {
 		return
 	}
 	auditor.Audit(world, project, nil, nil)
-	utils.WriteJson(w, api.WithContext(u, project, cacheStatus, world, auditor.AuditNode(world, node)))
+	utils.WriteJson(w, api.WithContext(u, project, cacheStatus, world, auditor.AuditNodeWithVisibility(world, node, api.consumerVisibility(u, projectId))))
 }
 
 func (api *Api) LoadWorld(ctx context.Context, project *db.Project, from, to timeseries.Time) (*model.World, *cache.Status, error) {

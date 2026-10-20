@@ -185,6 +185,9 @@ func RenderTraces(ctx context.Context, chs clickhouse.Clients, w *model.World, q
 	if sq.TsTo == 0 {
 		sq.TsTo = sq.Ctx.To
 	}
+	if restrict {
+		sq.TsFrom, sq.TsTo = ClampTsRange(sq.TsFrom, sq.TsTo, sq.Ctx)
+	}
 	sq.DurFrom = q.durFrom
 	sq.DurTo = q.durTo
 	sq.Errors = q.errors
@@ -206,6 +209,9 @@ func RenderTraces(ctx context.Context, chs clickhouse.Clients, w *model.World, q
 				klog.Errorln(err)
 				res.Error = fmt.Sprintf("Clickhouse error: %s", err)
 				return res
+			}
+			if restrict {
+				spans = FilterSpansByService(spans, utils.NewStringSet(sq.Services...))
 			}
 			overallSpans = append(overallSpans, spans...)
 		case q.View == "traces":
@@ -368,6 +374,37 @@ func RenderTraces(ctx context.Context, chs clickhouse.Clients, w *model.World, q
 	return res
 }
 
+// ClampTsRange keeps a [from, to] selection within the context window.
+func ClampTsRange(from, to timeseries.Time, ctx timeseries.Context) (timeseries.Time, timeseries.Time) {
+	if from < ctx.From || from > ctx.To {
+		from = ctx.From
+	}
+	if to > ctx.To || to < ctx.From {
+		to = ctx.To
+	}
+	if from > to {
+		from, to = ctx.From, ctx.To
+	}
+	return from, to
+}
+
+// FilterSpansByService keeps only spans whose service is in allowed.
+func FilterSpansByService(spans []*model.TraceSpan, allowed *utils.StringSet) []*model.TraceSpan {
+	out := spans[:0]
+	for _, s := range spans {
+		if allowed.Has(s.ServiceName) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// TraceServicesForApps returns the trace service names that belong to the
+// applications of appsWorld.
+func TraceServicesForApps(ctx context.Context, chs clickhouse.Clients, appsWorld, fullWorld *model.World) []string {
+	return traceServicesForApps(ctx, chs, appsWorld, fullWorld)
+}
+
 func traceServicesForApps(ctx context.Context, chs clickhouse.Clients, appsWorld, fullWorld *model.World) []string {
 	if appsWorld == nil || len(appsWorld.Applications) == 0 {
 		return nil
@@ -376,10 +413,8 @@ func traceServicesForApps(ctx context.Context, chs clickhouse.Clients, appsWorld
 		fullWorld = appsWorld
 	}
 	namespaces := map[string]bool{}
-	appNames := map[string]bool{}
 	for _, app := range appsWorld.Applications {
 		namespaces[app.Id.Namespace] = true
-		appNames[app.Id.Name] = true
 	}
 	candidates := utils.NewStringSet()
 	for _, ch := range chs.Clients {
@@ -400,18 +435,12 @@ func traceServicesForApps(ctx context.Context, chs clickhouse.Clients, appsWorld
 	for _, app := range appsWorld.Applications {
 		// Agent/eBPF spans use container service names (same as logs).
 		out.Add(app.LogServices()...)
-		var otelService string
-		if app.Settings != nil && app.Settings.Tracing != nil {
-			otelService = app.Settings.Tracing.Service
-		} else {
-			otelService = model.GuessService(otel, fullWorld, app)
-		}
-		if otelService != "" {
+		if otelService := app.RestrictedOtelTraceService(otel, fullWorld); otelService != "" {
 			out.Add(otelService)
 		}
 	}
 	for _, s := range candidates.Items() {
-		if serviceBelongsToNamespaces(s, namespaces, appNames) {
+		if serviceBelongsToNamespaces(s, namespaces) {
 			out.Add(s)
 		}
 	}

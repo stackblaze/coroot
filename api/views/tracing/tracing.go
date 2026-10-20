@@ -61,7 +61,10 @@ type Event struct {
 	Attributes map[string]string `json:"attributes"`
 }
 
-func Render(ctx context.Context, ch *clickhouse.Client, app *model.Application, q url.Values, w *model.World) *View {
+// Render renders the tracing view of the application. When allowService is
+// not nil, spans returned by a trace-id lookup are limited to the services it
+// accepts.
+func Render(ctx context.Context, ch *clickhouse.Client, app *model.Application, q url.Values, w *model.World, allowService func(string) bool) *View {
 	if ch == nil {
 		return &View{Status: model.WARNING, Message: "Clickhouse integration is not configured"}
 	}
@@ -129,6 +132,9 @@ func Render(ctx context.Context, ch *clickhouse.Client, app *model.Application, 
 	switch {
 	case traceId != "":
 		spans, err = ch.GetSpansByTraceId(ctx, traceId)
+		if allowService != nil {
+			spans = filterSpans(spans, allowService)
+		}
 
 	case (source == "" || source == model.TraceSourceOtel) && otelService != "":
 		source = model.TraceSourceOtel
@@ -282,6 +288,16 @@ func Render(ctx context.Context, ch *clickhouse.Client, app *model.Application, 
 		v.Spans = append(v.Spans, ss)
 	}
 	return v
+}
+
+func filterSpans(spans []*model.TraceSpan, allow func(string) bool) []*model.TraceSpan {
+	out := spans[:0]
+	for _, s := range spans {
+		if allow(s.ServiceName) {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func getService(typ model.TraceSource, s *model.TraceSpan, app *model.Application) string {
