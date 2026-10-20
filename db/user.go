@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"slices"
 
 	"github.com/coroot/coroot/rbac"
 	"github.com/coroot/coroot/utils"
@@ -15,6 +16,11 @@ const (
 	AdminUserName            = "Admin"
 	AdminUserDefaultPassword = ""
 	AnonymousUserName        = "Anonymous"
+
+	// legacyHandoffEmailSuffix marks users created by trusted handoff before
+	// the users table had a handoff column. It is used only once, when the
+	// column is added.
+	legacyHandoffEmailSuffix = "@handoff.local"
 )
 
 type User struct {
@@ -23,6 +29,8 @@ type User struct {
 	Name      string
 	Roles     []rbac.RoleName
 	Anonymous bool
+	// Handoff is true for users created by the trusted handoff endpoint.
+	Handoff bool
 }
 
 func (u *User) Migrate(m *Migrator) error {
@@ -37,7 +45,17 @@ func (u *User) Migrate(m *Migrator) error {
 	if err != nil {
 		return err
 	}
-	return nil
+	exists, err := m.ColumnExists("users", "handoff")
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	if err = m.AddColumnIfNotExists("users", "handoff", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	return m.Exec("UPDATE users SET handoff = 1 WHERE email LIKE $1", "%"+legacyHandoffEmailSuffix)
 }
 
 func (u *User) IsDefaultAdmin() bool {
@@ -108,7 +126,7 @@ func (db *DB) DefaultAdminUserIsTheOnlyUser() (*User, error) {
 }
 
 func (db *DB) GetUsers() ([]*User, error) {
-	rows, err := db.db.Query("SELECT id, email, name, roles FROM users")
+	rows, err := db.db.Query("SELECT id, email, name, roles, handoff FROM users")
 	if err != nil {
 		return nil, err
 	}
@@ -117,10 +135,12 @@ func (db *DB) GetUsers() ([]*User, error) {
 	for rows.Next() {
 		var u User
 		var roles string
-		err = rows.Scan(&u.Id, &u.Email, &u.Name, &roles)
+		var handoff int
+		err = rows.Scan(&u.Id, &u.Email, &u.Name, &roles, &handoff)
 		if err != nil {
 			return nil, err
 		}
+		u.Handoff = handoff != 0
 		err = json.Unmarshal([]byte(roles), &u.Roles)
 		if err != nil {
 			return nil, err
@@ -149,13 +169,15 @@ func (db *DB) AuthUser(email, password string) (int, error) {
 func (db *DB) GetUser(id int) (*User, error) {
 	u := User{Id: id}
 	var roles string
-	err := db.db.QueryRow("SELECT email, name, roles FROM users WHERE id = $1", id).Scan(&u.Email, &u.Name, &roles)
+	var handoff int
+	err := db.db.QueryRow("SELECT email, name, roles, handoff FROM users WHERE id = $1", id).Scan(&u.Email, &u.Name, &roles, &handoff)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
+	u.Handoff = handoff != 0
 	err = json.Unmarshal([]byte(roles), &u.Roles)
 	if err != nil {
 		return nil, err
@@ -166,13 +188,15 @@ func (db *DB) GetUser(id int) (*User, error) {
 func (db *DB) GetUserByEmail(email string) (*User, error) {
 	u := User{Email: email}
 	var roles string
-	err := db.db.QueryRow("SELECT id, name, roles FROM users WHERE email = $1", email).Scan(&u.Id, &u.Name, &roles)
+	var handoff int
+	err := db.db.QueryRow("SELECT id, name, roles, handoff FROM users WHERE email = $1", email).Scan(&u.Id, &u.Name, &roles, &handoff)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
+	u.Handoff = handoff != 0
 	err = json.Unmarshal([]byte(roles), &u.Roles)
 	if err != nil {
 		return nil, err
@@ -180,11 +204,16 @@ func (db *DB) GetUserByEmail(email string) (*User, error) {
 	return &u, nil
 }
 
-// EnsureUser returns an existing user by email or creates one with a random unusable password.
-// When the user already exists, name and role are updated when provided.
+// EnsureUser returns an existing handoff user by email or creates one with a
+// random unusable password. When the user already exists, name and role are
+// updated when provided. Users that were not created by handoff are never
+// returned or modified: ErrConflict is returned instead.
 func (db *DB) EnsureUser(email, name string, role rbac.RoleName) (*User, error) {
 	u, err := db.GetUserByEmail(email)
 	if err == nil {
+		if !u.Handoff {
+			return nil, ErrConflict
+		}
 		if name == "" {
 			name = u.Name
 		}
@@ -206,13 +235,47 @@ func (db *DB) EnsureUser(email, name string, role rbac.RoleName) (*User, error) 
 		role = rbac.RoleViewer
 	}
 	// Random unusable password — handoff users authenticate via session cookie only.
-	if err = db.AddUser(email, utils.RandomString(48), name, role); err != nil {
+	if err = db.addUser(email, utils.RandomString(48), name, role, true); err != nil {
 		return nil, err
 	}
 	return db.GetUserByEmail(email)
 }
 
+// CheckHandoffUser returns ErrConflict when a user with the email exists and
+// was not created by handoff.
+func (db *DB) CheckHandoffUser(email string) error {
+	u, err := db.GetUserByEmail(email)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return nil
+	case err != nil:
+		return err
+	case !u.Handoff:
+		return ErrConflict
+	}
+	return nil
+}
+
+// RoleHasNonHandoffUsers reports whether any user not created by handoff has
+// the role.
+func (db *DB) RoleHasNonHandoffUsers(role rbac.RoleName) (bool, error) {
+	users, err := db.GetUsers()
+	if err != nil {
+		return false, err
+	}
+	for _, u := range users {
+		if !u.Handoff && slices.Contains(u.Roles, role) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (db *DB) AddUser(email, password, name string, role rbac.RoleName) error {
+	return db.addUser(email, password, name, role, false)
+}
+
+func (db *DB) addUser(email, password, name string, role rbac.RoleName, handoff bool) error {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return err
@@ -221,7 +284,11 @@ func (db *DB) AddUser(email, password, name string, role rbac.RoleName) error {
 	if err != nil {
 		return err
 	}
-	_, err = db.db.Exec("INSERT INTO users(email, name, password, roles) VALUES($1, $2, $3, $4)", email, name, string(hash), string(roles))
+	h := 0
+	if handoff {
+		h = 1
+	}
+	_, err = db.db.Exec("INSERT INTO users(email, name, password, roles, handoff) VALUES($1, $2, $3, $4, $5)", email, name, string(hash), string(roles), h)
 	if db.IsUniqueViolationError(err) {
 		return ErrConflict
 	}
@@ -239,7 +306,8 @@ func (db *DB) UpdateUser(id int, email, password, name string, role rbac.RoleNam
 		if err != nil {
 			return err
 		}
-		_, err = db.db.Exec("UPDATE users SET email=$1, name=$2, password=$3, roles = $4 WHERE id = $5", email, name, string(hash), string(roles), id)
+		// A user given a password is a regular account from now on.
+		_, err = db.db.Exec("UPDATE users SET email=$1, name=$2, password=$3, roles = $4, handoff = 0 WHERE id = $5", email, name, string(hash), string(roles), id)
 	} else {
 		_, err = db.db.Exec("UPDATE users SET email=$1, name=$2, roles = $3 WHERE id = $4", email, name, string(roles), id)
 	}

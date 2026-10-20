@@ -192,6 +192,36 @@ func (m *Migrator) Exec(query string, args ...any) error {
 	return err
 }
 
+// ColumnExists reports whether the table already has the column.
+func (m *Migrator) ColumnExists(table, column string) (bool, error) {
+	var rows *sql.Rows
+	var err error
+	switch m.typ {
+	case TypeSqlite:
+		rows, err = m.db.Query(fmt.Sprintf("SELECT name FROM pragma_table_info('%s');", table))
+	case TypePostgres:
+		rows, err = m.db.Query("SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1", table)
+	default:
+		return false, fmt.Errorf("unsupported database type: %s", m.typ)
+	}
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+	var name string
+	for rows.Next() {
+		if err = rows.Scan(&name); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
 func (m *Migrator) AddColumnIfNotExists(table, column, dataType string) error {
 	switch m.typ {
 	case TypeSqlite:
