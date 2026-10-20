@@ -103,8 +103,9 @@ func (api *Api) CreateHandoff(w http.ResponseWriter, r *http.Request) {
 	}
 
 	role := form.Role
-	if role == "" {
-		role = rbac.RoleViewer
+	if !handoffRoleAllowed(role) {
+		http.Error(w, "role is not allowed", http.StatusBadRequest)
+		return
 	}
 
 	// Handoff only manages users it created itself.
