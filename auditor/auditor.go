@@ -34,8 +34,15 @@ func (ss Stages) stage(name string, f func()) {
 }
 
 func Audit(w *model.World, p *db.Project, generateDetailedReportFor *model.Application, prof *Profile) {
+	AuditWithVisibility(w, p, generateDetailedReportFor, prof, nil)
+}
+
+// AuditWithVisibility is like Audit, but node consumer charts (CPU and memory
+// consumers) only name the applications accepted by visible; all others are
+// aggregated into a single "other" series. A nil visible accepts everything.
+func AuditWithVisibility(w *model.World, p *db.Project, generateDetailedReportFor *model.Application, prof *Profile, visible func(*model.Application) bool) {
 	start := time.Now()
-	ncs := nodeConsumersByNode{}
+	ncs := nodeConsumersByNode{visible: visible, byNode: map[string]*nodeConsumers{}}
 
 	var stages Stages
 	if prof != nil {

@@ -69,7 +69,7 @@ func TestRenderSearchFiltersByApplicationPermission(t *testing.T) {
 	require.Len(t, ov.Risks, 1)
 	assert.Equal(t, allowed.Id, ov.Risks[0].ApplicationId)
 
-	assert.True(t, api.hasRestrictedAppAccess(user, projectId, w))
+	assert.True(t, api.hasRestrictedAppAccess(user, projectId))
 	restricted := api.worldWithViewableApps(user, projectId, w)
 	require.Len(t, restricted.Applications, 1)
 	assert.NotNil(t, restricted.Applications[allowed.Id])
@@ -79,5 +79,5 @@ func TestRenderSearchFiltersByApplicationPermission(t *testing.T) {
 	api.roles = staticRoles(rbac.Roles)
 	search = api.renderSearch(viewer, projectId, w)
 	assert.Len(t, search.Applications, 2)
-	assert.False(t, api.hasRestrictedAppAccess(viewer, projectId, w))
+	assert.False(t, api.hasRestrictedAppAccess(viewer, projectId))
 }

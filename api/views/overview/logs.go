@@ -18,7 +18,8 @@ import (
 )
 
 const (
-	defaultLimit = 100
+	defaultLimit    = 100
+	restrictedLimit = 1000
 )
 
 type Logs struct {
@@ -75,6 +76,9 @@ func renderLogs(ctx context.Context, chs clickhouse.Clients, w *model.World, que
 	}
 	if q.Limit <= 0 {
 		q.Limit = defaultLimit
+	}
+	if restrict && q.Limit > restrictedLimit {
+		q.Limit = restrictedLimit
 	}
 	lq := clickhouse.LogQuery{Ctx: w.Ctx, Limit: q.Limit}
 	var clusterFilter *clickhouse.LogFilter
@@ -150,6 +154,9 @@ func renderLogs(ctx context.Context, chs clickhouse.Clients, w *model.World, que
 				if q.Since != "" {
 					if i, _ := strconv.ParseInt(q.Since, 10, 64); i > 0 {
 						lq.Since = time.Unix(0, i)
+						if restrict {
+							lq.Since = ClampSince(lq.Since, w.Ctx)
+						}
 					}
 				}
 				entries, err = ch.GetLogs(ctx, lq)
@@ -187,10 +194,8 @@ func logServicesForApps(ctx context.Context, chs clickhouse.Clients, appsWorld, 
 		fullWorld = appsWorld
 	}
 	namespaces := map[string]bool{}
-	appNames := map[string]bool{}
 	for _, app := range appsWorld.Applications {
 		namespaces[app.Id.Namespace] = true
-		appNames[app.Id.Name] = true
 	}
 	candidates := utils.NewStringSet()
 	for _, ch := range chs.Clients {
@@ -210,42 +215,47 @@ func logServicesForApps(ctx context.Context, chs clickhouse.Clients, appsWorld, 
 	out := utils.NewStringSet()
 	for _, app := range appsWorld.Applications {
 		out.Add(app.LogServices()...)
-		if s := app.OtelLogService(otel, fullWorld); s != "" {
+		if s := app.RestrictedOtelLogService(otel, fullWorld); s != "" {
 			out.Add(s)
 		}
 	}
 	// Include every ClickHouse service that clearly belongs to an allowed
 	// namespace (agent paths are /k8s/<ns>/<workload>[/...]).
 	for _, s := range candidates.Items() {
-		if serviceBelongsToNamespaces(s, namespaces, appNames) {
+		if serviceBelongsToNamespaces(s, namespaces) {
 			out.Add(s)
 		}
 	}
 	return out.Items()
 }
 
-func serviceBelongsToNamespaces(service string, namespaces, appNames map[string]bool) bool {
+// serviceBelongsToNamespaces reports whether a telemetry service name belongs
+// to one of the namespaces. Agent services (/k8s/<ns>/<workload>...) must
+// match the namespace segment exactly; other services match only when a whole
+// "/" or "." separated token equals a namespace.
+func serviceBelongsToNamespaces(service string, namespaces map[string]bool) bool {
 	if service == "" {
 		return false
 	}
-	// Agent / container logs: /k8s/<namespace>/<workload>...
 	if strings.HasPrefix(service, "/k8s/") || strings.HasPrefix(service, "/k8s-cronjob/") {
 		parts := strings.Split(service, "/")
 		// "", "k8s", "<ns>", "<workload>", ...
-		if len(parts) >= 4 && namespaces[parts[2]] {
-			return true
-		}
+		return len(parts) >= 4 && parts[3] != "" && namespaces[parts[2]]
 	}
-	// OTel service names often match the workload / app name.
-	if appNames[service] {
-		return true
-	}
-	for ns := range namespaces {
-		if strings.Contains(service, ns) {
+	for _, tok := range strings.FieldsFunc(service, func(r rune) bool { return r == '/' || r == '.' }) {
+		if namespaces[tok] {
 			return true
 		}
 	}
 	return false
+}
+
+// ClampSince keeps a "since" cursor within the context window.
+func ClampSince(since time.Time, ctx timeseries.Context) time.Time {
+	if from := ctx.From.ToStandard(); since.Before(from) {
+		return from
+	}
+	return since
 }
 
 func (v *Logs) renderEntries(entries []*model.LogEntry, w *model.World, limit int, dropUnmapped bool) {

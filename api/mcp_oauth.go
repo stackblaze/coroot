@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/coroot/coroot/db"
+	"github.com/coroot/coroot/rbac"
 	"github.com/coroot/coroot/utils"
 	"github.com/golang-jwt/jwt/v5"
 	"k8s.io/klog"
@@ -128,7 +129,44 @@ func (api *Api) MCPUserFromBearer(r *http.Request) *db.User {
 	if err != nil || user == nil {
 		return nil
 	}
+	if !api.mcpAllowed(user) {
+		return nil
+	}
 	return user
+}
+
+// mcpAllowed reports whether the user may use the MCP server. MCP tools work
+// at project scope, so it is only available to users whose application view
+// is not limited by their role in any project they can access.
+func (api *Api) mcpAllowed(u *db.User) bool {
+	if u == nil {
+		return false
+	}
+	names, err := api.db.GetProjectNames()
+	if err != nil {
+		klog.Errorln("mcp:", err)
+		return false
+	}
+	ids := make([]db.ProjectId, 0, len(names))
+	for id := range names {
+		ids = append(ids, id)
+	}
+	return api.mcpAllowedForProjects(u, ids)
+}
+
+func (api *Api) mcpAllowedForProjects(u *db.User, projectIds []db.ProjectId) bool {
+	if u == nil {
+		return false
+	}
+	for _, id := range projectIds {
+		if !api.IsAllowed(u, rbac.Actions.Project(string(id)).List()...) {
+			continue
+		}
+		if api.hasRestrictedAppAccess(u, string(id)) {
+			return false
+		}
+	}
+	return true
 }
 
 func (api *Api) MCPOAuthProtectedResource(w http.ResponseWriter, r *http.Request) {
@@ -266,6 +304,10 @@ func (api *Api) MCPOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user := api.GetUser(r)
+	if user != nil && !api.mcpAllowed(user) {
+		mcpRedirectErr(w, r, req.RedirectURI, req.State, oauthErrAccessDenied, "MCP access is not available for this account")
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		api.mcpAuthorizeShowConsent(w, r, client.Name, user)
@@ -425,6 +467,10 @@ func (api *Api) mcpExchangeRefresh(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api *Api) mcpIssueTokenPair(w http.ResponseWriter, userId int, clientId string) {
+	if user, err := api.db.GetUser(userId); err != nil || !api.mcpAllowed(user) {
+		mcpOAuthError(w, http.StatusBadRequest, oauthErrInvalidGrant, "MCP access is not available for this account")
+		return
+	}
 	access, err := api.mcpIssueToken(mcpAudAccess, userId, clientId, mcpOAuthAccessTokenTTL)
 	if err != nil {
 		klog.Errorln("mcp:", err)

@@ -10,6 +10,12 @@ import (
 )
 
 func AuditNode(w *model.World, node *model.Node) *model.AuditReport {
+	return AuditNodeWithVisibility(w, node, nil)
+}
+
+// AuditNodeWithVisibility is like AuditNode, but consumer charts aggregate
+// applications not accepted by visible into a single "other" series.
+func AuditNodeWithVisibility(w *model.World, node *model.Node, visible func(*model.Application) bool) *model.AuditReport {
 	report := model.NewAuditReport(nil, w.Ctx, nil, model.AuditReportNode, true)
 
 	if !node.IsAgentInstalled() {
@@ -58,7 +64,7 @@ func AuditNode(w *model.World, node *model.Node) *model.AuditReport {
 		node.CpuUsageByMode,
 	)
 
-	ncs := getNodeConsumers(node)
+	ncs := getNodeConsumers(node, visible)
 	report.GetOrCreateChart("CPU consumers, cores", model.NewDocLink("inspections", "cpu", "cpu-consumers")).
 		Group("CPU", 1).
 		Stacked().

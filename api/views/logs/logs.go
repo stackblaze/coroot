@@ -132,14 +132,13 @@ func Render(ctx context.Context, ch *clickhouse.Client, app *model.Application, 
 		return v
 	}
 
-	v.Source = q.Source
-	if v.Source == "" {
-		if v.Service != "" {
-			v.Source = model.LogSourceOtel
-		} else {
-			v.Source = model.LogSourceAgent
-		}
+	source, ok := selectSource(q.Source, v.Service)
+	if !ok {
+		v.Status = model.WARNING
+		v.Message = "Unknown log source"
+		return v
 	}
+	v.Source = source
 	switch v.Source {
 	case model.LogSourceOtel:
 		v.Message = fmt.Sprintf("Using OpenTelemetry logs of <i>%s</i>", otelService)
@@ -157,14 +156,35 @@ func Render(ctx context.Context, ch *clickhouse.Client, app *model.Application, 
 	return v
 }
 
+// selectSource returns the log source to use: the requested one when it is
+// known, or a default based on whether the app has an OpenTelemetry service.
+func selectSource(requested model.LogSource, otelService string) (model.LogSource, bool) {
+	switch requested {
+	case model.LogSourceAgent, model.LogSourceOtel:
+		return requested, true
+	case "":
+		if otelService != "" {
+			return model.LogSourceOtel, true
+		}
+		return model.LogSourceAgent, true
+	}
+	return "", false
+}
+
 func renderEntries(ctx context.Context, v *View, ch *clickhouse.Client, app *model.Application, w *model.World, q Query, otelService string) {
 	if len(app.Instances) == 0 {
 		return
 	}
+	services := app.LogQueryServices(v.Source, otelService)
+	if len(services) == 0 {
+		// Without a service filter the query would not be limited to this application.
+		return
+	}
 	var err error
 	lq := clickhouse.LogQuery{
-		Ctx:   w.Ctx,
-		Limit: q.Limit,
+		Ctx:      w.Ctx,
+		Limit:    q.Limit,
+		Services: services,
 	}
 	var clusterFilter *clickhouse.LogFilter
 	for _, f := range q.Filters {
@@ -177,7 +197,6 @@ func renderEntries(ctx context.Context, v *View, ch *clickhouse.Client, app *mod
 	if !clusterFilter.Matches(ch.Project().Name) {
 		return
 	}
-	lq.Services = app.LogQueryServices(v.Source, otelService)
 	if v.Source == model.LogSourceAgent {
 		hashes := utils.NewStringSet()
 		for _, f := range q.Filters {
@@ -213,6 +232,9 @@ func renderEntries(ctx context.Context, v *View, ch *clickhouse.Client, app *mod
 			if q.Since != "" {
 				if i, _ := strconv.ParseInt(q.Since, 10, 64); i > 0 {
 					lq.Since = time.Unix(0, i)
+					if from := w.Ctx.From.ToStandard(); lq.Since.Before(from) {
+						lq.Since = from
+					}
 				}
 			}
 			entries, err = ch.GetLogs(ctx, lq)

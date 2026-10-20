@@ -692,6 +692,21 @@ func (f *IntegrationFormWebhook) Get(project *db.Project, masked bool) {
 	f.IntegrationWebhook = *cfg
 	if masked {
 		f.Url = "<hidden>"
+		if cfg.BasicAuth != nil {
+			f.BasicAuth = &utils.BasicAuth{User: "<hidden>", Password: "<hidden>"}
+		}
+		if len(cfg.CustomHeaders) > 0 {
+			f.CustomHeaders = make([]utils.Header, 0, len(cfg.CustomHeaders))
+			for _, h := range cfg.CustomHeaders {
+				f.CustomHeaders = append(f.CustomHeaders, utils.Header{Key: h.Key, Value: "<hidden>"})
+			}
+		}
+		if len(cfg.CustomFields) > 0 {
+			f.CustomFields = make(map[string]string, len(cfg.CustomFields))
+			for k := range cfg.CustomFields {
+				f.CustomFields[k] = "<hidden>"
+			}
+		}
 	}
 }
 
