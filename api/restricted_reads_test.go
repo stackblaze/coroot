@@ -89,8 +89,33 @@ func TestRolesListedForRestrictedUser(t *testing.T) {
 	}
 
 	assert.Equal(t, []string{string(namespaceRole)}, list(&db.User{Roles: []rbac.RoleName{namespaceRole}}))
-	for _, u := range builtinUsers() {
-		assert.Len(t, list(u), 4, u.Roles)
+	assert.Len(t, list(&db.User{Roles: []rbac.RoleName{rbac.RoleAdmin}}), 4)
+	// Users who cannot manage users or roles see only their own roles.
+	assert.Equal(t, []string{string(rbac.RoleEditor)}, list(&db.User{Roles: []rbac.RoleName{rbac.RoleEditor}}))
+	assert.Equal(t, []string{string(rbac.RoleViewer)}, list(&db.User{Roles: []rbac.RoleName{rbac.RoleViewer}}))
+	assert.Empty(t, list(&db.User{Roles: []rbac.RoleName{"unknown"}}))
+}
+
+func TestRolesListedForRoleAndUserManagers(t *testing.T) {
+	api, _ := newProjectApi(t)
+	roles := api.roles.(staticRoles)
+	roles = append(roles,
+		rbac.NewRole("role-manager", rbac.NewPermission(rbac.ScopeRoles, rbac.ActionEdit, nil)),
+		rbac.NewRole("user-manager", rbac.NewPermission(rbac.ScopeUsers, rbac.ActionEdit, nil)),
+	)
+	api.roles = roles
+	for _, name := range []rbac.RoleName{"role-manager", "user-manager"} {
+		r := httptest.NewRequest(http.MethodGet, "/api/roles", nil)
+		w := httptest.NewRecorder()
+		api.Roles(w, r, &db.User{Roles: []rbac.RoleName{name}})
+		require.Equal(t, http.StatusOK, w.Code)
+		var res struct {
+			Roles []struct {
+				Name string `json:"name"`
+			} `json:"roles"`
+		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
+		assert.Len(t, res.Roles, len(roles), name)
 	}
 }
 

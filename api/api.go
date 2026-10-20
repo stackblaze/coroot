@@ -286,7 +286,7 @@ func (api *Api) Roles(w http.ResponseWriter, r *http.Request, u *db.User) {
 		http.Error(w, "", http.StatusInternalServerError)
 		return
 	}
-	utils.WriteJson(w, views.Roles(api.visibleRoles(u, roles)))
+	utils.WriteJson(w, views.Roles(api.listableRoles(u, roles)))
 }
 
 func (api *Api) SSO(w http.ResponseWriter, r *http.Request, u *db.User) {
