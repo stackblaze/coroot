@@ -2,6 +2,7 @@ package api
 
 import (
 	"crypto/subtle"
+	"errors"
 	"net/http"
 	"net/url"
 	"path"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/coroot/coroot/api/forms"
+	"github.com/coroot/coroot/db"
 	"github.com/coroot/coroot/rbac"
 	"github.com/coroot/coroot/utils"
 	"k8s.io/klog"
@@ -105,6 +107,17 @@ func (api *Api) CreateHandoff(w http.ResponseWriter, r *http.Request) {
 		role = rbac.RoleViewer
 	}
 
+	// Handoff only manages users it created itself.
+	if err := api.db.CheckHandoffUser(form.Email); err != nil {
+		if errors.Is(err, db.ErrConflict) {
+			http.Error(w, "a user with this email already exists", http.StatusConflict)
+			return
+		}
+		klog.Errorln(err)
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
+
 	if len(form.Permissions) > 0 {
 		if role.Builtin() {
 			http.Error(w, "cannot attach custom permissions to a builtin role", http.StatusBadRequest)
@@ -113,6 +126,17 @@ func (api *Api) CreateHandoff(w http.ResponseWriter, r *http.Request) {
 		mgr, ok := api.roles.(rbac.MutableRoleManager)
 		if !ok {
 			http.Error(w, "custom roles are not supported", http.StatusInternalServerError)
+			return
+		}
+		// Roles assigned to regular users are managed in Coroot, not by handoff.
+		inUse, err := api.db.RoleHasNonHandoffUsers(role)
+		if err != nil {
+			klog.Errorln(err)
+			http.Error(w, "", http.StatusInternalServerError)
+			return
+		}
+		if inUse {
+			http.Error(w, "the role is assigned to users not created by handoff", http.StatusConflict)
 			return
 		}
 		if err := mgr.SaveRole(role, form.Permissions); err != nil {
@@ -135,6 +159,10 @@ func (api *Api) CreateHandoff(w http.ResponseWriter, r *http.Request) {
 
 	user, err := api.db.EnsureUser(form.Email, form.Name, role)
 	if err != nil {
+		if errors.Is(err, db.ErrConflict) {
+			http.Error(w, "a user with this email already exists", http.StatusConflict)
+			return
+		}
 		klog.Errorln(err)
 		http.Error(w, "", http.StatusInternalServerError)
 		return
