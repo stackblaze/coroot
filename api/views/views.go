@@ -57,8 +57,8 @@ func Profiling(ctx context.Context, ch *clickhouse.Client, app *model.Applicatio
 	return profiling.Render(ctx, ch, app, q, w)
 }
 
-func Tracing(ctx context.Context, ch *clickhouse.Client, app *model.Application, q url.Values, w *model.World) *tracing.View {
-	return tracing.Render(ctx, ch, app, q, w)
+func Tracing(ctx context.Context, ch *clickhouse.Client, app *model.Application, q url.Values, w *model.World, allowService func(string) bool) *tracing.View {
+	return tracing.Render(ctx, ch, app, q, w, allowService)
 }
 
 func Logs(ctx context.Context, ch *clickhouse.Client, app *model.Application, q url.Values, w *model.World) *logs.View {

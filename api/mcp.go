@@ -117,7 +117,10 @@ func (h *MCPHandler) sessionState(ctx context.Context) *mcpSessionState {
 }
 
 func (h *MCPHandler) currentProject(ctx context.Context) (*db.Project, error) {
-	st := h.sessionState(ctx)
+	return h.sessionProject(h.sessionState(ctx))
+}
+
+func (h *MCPHandler) sessionProject(st *mcpSessionState) (*db.Project, error) {
 	if st == nil {
 		return nil, nil
 	}
@@ -429,11 +432,15 @@ type mcpInspectionRef struct {
 }
 
 func (h *MCPHandler) RequireUserAndProject(ctx context.Context) (*db.User, *db.Project, *mcp.CallToolResult) {
+	return h.requireUserAndProjectWithState(ctx, h.sessionState(ctx))
+}
+
+func (h *MCPHandler) requireUserAndProjectWithState(ctx context.Context, st *mcpSessionState) (*db.User, *db.Project, *mcp.CallToolResult) {
 	user := mcpUserFromContext(ctx)
 	if user == nil {
 		return nil, nil, mcp.NewToolResultError("unauthorized")
 	}
-	project, err := h.currentProject(ctx)
+	project, err := h.sessionProject(st)
 	if err != nil {
 		return nil, nil, mcp.NewToolResultError("failed to load project: " + err.Error())
 	}
@@ -442,6 +449,9 @@ func (h *MCPHandler) RequireUserAndProject(ctx context.Context) (*db.User, *db.P
 	}
 	if !h.Api.IsAllowed(user, rbac.Actions.Project(string(project.Id)).List()...) {
 		return nil, nil, mcp.NewToolResultError("forbidden: no access to this project")
+	}
+	if h.Api.hasRestrictedAppAccess(user, string(project.Id)) {
+		return nil, nil, mcp.NewToolResultError("forbidden: MCP access is not available for this account")
 	}
 	return user, project, nil
 }
@@ -1311,7 +1321,12 @@ func (h *MCPHandler) runTracesQuery(ctx context.Context, req mcp.CallToolRequest
 		q.Filters = append(q.Filters, overview.Filter{Field: "SpanName", Op: "=", Value: s})
 	}
 	queryJSON, _ := json.Marshal(q)
-	res := overview.RenderTraces(ctx, chs, world, string(queryJSON), false, world)
+	renderWorld := world
+	restricted := h.Api.hasRestrictedAppAccess(user, string(project.Id))
+	if restricted {
+		renderWorld = h.Api.worldWithViewableApps(user, string(project.Id), world)
+	}
+	res := overview.RenderTraces(ctx, chs, renderWorld, string(queryJSON), restricted, world)
 	if res.Error != "" {
 		return nil, mcp.NewToolResultError(res.Error)
 	}
@@ -1483,6 +1498,9 @@ func (h *MCPHandler) toolQueryLogs(ctx context.Context, req mcp.CallToolRequest)
 	if errResult != nil {
 		return errResult, nil
 	}
+	if app == nil && h.Api.hasRestrictedAppAccess(user, string(project.Id)) {
+		return mcp.NewToolResultError("app_id is required"), nil
+	}
 	clusterId := ""
 	if app != nil {
 		clusterId = app.Id.ClusterId
@@ -1561,6 +1579,11 @@ func (h *MCPHandler) ResolveApp(user *db.User, project *db.Project, world *model
 }
 
 func (h *MCPHandler) resolveLogSource(ctx context.Context, ch *clickhouse.Client, world *model.World, app *model.Application, source model.LogSource) (model.LogSource, []string, *mcp.CallToolResult) {
+	switch source {
+	case "", model.LogSourceAgent, model.LogSourceOtel:
+	default:
+		return "", nil, mcp.NewToolResultError("source must be 'agent' or 'otel'")
+	}
 	if app == nil {
 		if source == "" {
 			source = model.LogSourceAgent
@@ -1592,6 +1615,9 @@ func (h *MCPHandler) resolveLogSource(ctx context.Context, ch *clickhouse.Client
 	}
 	if source == model.LogSourceAgent && len(services) == 0 {
 		return "", nil, mcp.NewToolResultError("no container services found for this application — try source='otel'")
+	}
+	if len(services) == 0 {
+		return "", nil, mcp.NewToolResultError("no log services found for this application")
 	}
 	return source, services, nil
 }

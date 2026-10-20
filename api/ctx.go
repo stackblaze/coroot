@@ -9,6 +9,7 @@ import (
 	"github.com/coroot/coroot/model"
 	"github.com/coroot/coroot/rbac"
 	"github.com/coroot/coroot/utils"
+	"k8s.io/klog"
 )
 
 type DataWithContext struct {
@@ -84,14 +85,15 @@ func (api *Api) WithContext(u *db.User, p *db.Project, cacheStatus *cache.Status
 		return DataWithContext{}
 	}
 	alerts := api.renderAlertCounts(u, string(p.Id), w)
+	gitOpsVisible := !api.hasRestrictedAppAccess(u, string(p.Id))
 	res := DataWithContext{
 		Context: Context{
 			Status:         renderStatus(p, cacheStatus, w, api.globalPrometheus),
 			Search:         api.renderSearch(u, string(p.Id), w),
 			Incidents:      api.renderIncidents(u, string(p.Id), w),
 			Alerts:         alerts,
-			Fluxcd:         gitOpsStatus(w, w != nil && w.Flux != nil, overview.CountFluxIssues),
-			Argocd:         gitOpsStatus(w, w != nil && w.ArgoCD != nil, overview.CountArgoCDIssues),
+			Fluxcd:         gitOpsStatus(w, gitOpsVisible && w != nil && w.Flux != nil, overview.CountFluxIssues),
+			Argocd:         gitOpsStatus(w, gitOpsVisible && w != nil && w.ArgoCD != nil, overview.CountArgoCDIssues),
 			Multicluster:   p.Multicluster(),
 			MemberProjects: p.Settings.MemberProjects,
 		},
@@ -122,22 +124,29 @@ func (api *Api) canViewAlert(u *db.User, projectId string, w *model.World, a *mo
 	if a == nil {
 		return false
 	}
+	return api.canViewApplicationId(u, projectId, w, a.ApplicationId, a.ApplicationCategory)
+}
+
+// canViewApplicationId checks application view permission by id. The
+// application is looked up in w when present; otherwise the permission is
+// checked against the id and the given category.
+func (api *Api) canViewApplicationId(u *db.User, projectId string, w *model.World, id model.ApplicationId, category model.ApplicationCategory) bool {
 	if u == nil {
 		return true
 	}
 	if w != nil {
-		if app := w.GetApplication(a.ApplicationId); app != nil {
+		if app := w.GetApplication(id); app != nil {
 			return api.canViewApplication(u, projectId, app)
 		}
 	}
-	return api.IsAllowed(u, rbac.Actions.Project(projectId).Application(a.ApplicationCategory, a.ApplicationId.Namespace, a.ApplicationId.Kind, a.ApplicationId.Name).View())
+	return api.IsAllowed(u, rbac.Actions.Project(projectId).Application(category, id.Namespace, id.Kind, id.Name).View())
 }
 
 func (api *Api) renderAlertCounts(u *db.User, projectId string, w *model.World) map[string]int {
 	if api.db == nil {
 		return map[string]int{}
 	}
-	if !api.hasRestrictedAppAccess(u, projectId, w) {
+	if !api.hasRestrictedAppAccess(u, projectId) {
 		alerts, _ := api.db.GetFiringAlertCountsBySeverity(db.ProjectId(projectId))
 		if alerts == nil {
 			return map[string]int{}
@@ -196,18 +205,29 @@ func (api *Api) filterAlertsResult(u *db.User, projectId string, w *model.World,
 	return out
 }
 
-// hasRestrictedAppAccess is true when the user cannot view every application
-// in the world (namespace-scoped handoff roles).
-func (api *Api) hasRestrictedAppAccess(u *db.User, projectId string, w *model.World) bool {
-	if u == nil || w == nil {
+// hasRestrictedAppAccess is true when the user's roles limit which
+// applications of the project they may view (e.g. namespace-scoped roles).
+// It is derived from role permissions only, so the answer does not depend on
+// which applications happen to be present in the requested time window.
+// It fails closed: if roles cannot be loaded the user is treated as restricted.
+func (api *Api) hasRestrictedAppAccess(u *db.User, projectId string) bool {
+	if u == nil {
 		return false
 	}
-	for _, app := range w.Applications {
-		if !api.canViewApplication(u, projectId, app) {
-			return true
+	roles, err := api.roles.GetRoles()
+	if err != nil {
+		klog.Errorln(err)
+		return true
+	}
+	var permissions rbac.PermissionSet
+	for _, rn := range u.Roles {
+		for _, role := range roles {
+			if role.Name == rn {
+				permissions = append(permissions, role.Permissions...)
+			}
 		}
 	}
-	return false
+	return permissions.RestrictsApplicationView(projectId)
 }
 
 // worldWithViewableApps returns a shallow copy of w whose Applications map
@@ -226,6 +246,18 @@ func (api *Api) worldWithViewableApps(u *db.User, projectId string, w *model.Wor
 	return &cp
 }
 
+// consumerVisibility returns the filter used to name applications in node
+// consumer charts: nil (everything) for project-wide users, otherwise only
+// the applications the user may view.
+func (api *Api) consumerVisibility(u *db.User, projectId string) func(*model.Application) bool {
+	if !api.hasRestrictedAppAccess(u, projectId) {
+		return nil
+	}
+	return func(app *model.Application) bool {
+		return api.canViewApplication(u, projectId, app)
+	}
+}
+
 func (api *Api) canViewNode(u *db.User, projectId, nodeName string) bool {
 	if u == nil {
 		return true
@@ -236,6 +268,29 @@ func (api *Api) canViewNode(u *db.User, projectId, nodeName string) bool {
 func (api *Api) filterOverviewForUser(u *db.User, projectId string, w *model.World, ov *overview.Overview) *overview.Overview {
 	if ov == nil || u == nil || w == nil {
 		return ov
+	}
+	if len(ov.Nodes) > 0 {
+		filtered := make([]overview.Node, 0, len(ov.Nodes))
+		for _, n := range ov.Nodes {
+			if api.canViewNode(u, projectId, n.Name) {
+				filtered = append(filtered, n)
+			}
+		}
+		ov.Nodes = filtered
+	}
+	if len(ov.Deployments) > 0 {
+		filtered := make([]*overview.Deployment, 0, len(ov.Deployments))
+		for _, d := range ov.Deployments {
+			if api.canViewApplication(u, projectId, w.GetApplication(d.Application.Id)) {
+				filtered = append(filtered, d)
+			}
+		}
+		ov.Deployments = filtered
+	}
+	if api.hasRestrictedAppAccess(u, projectId) {
+		// GitOps resources span namespaces and are not mapped to applications.
+		ov.FluxCD = nil
+		ov.ArgoCD = nil
 	}
 	if len(ov.Applications) > 0 {
 		filtered := make([]*overview.ApplicationStatus, 0, len(ov.Applications))
