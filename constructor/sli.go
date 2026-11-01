@@ -52,9 +52,14 @@ func (c *Constructor) loadSLIs(w *model.World, metrics map[string][]*model.Metri
 				Histogram: aggregateHistogram(w.Ctx, raw), HistogramRaw: raw,
 			})
 		} else {
-			raw := inboundLatencyRaw[app.Id]
+			// Client-side latency first: every external request reaches an app
+			// through the (instrumented) ingress, so the client view is complete.
+			// The server-side (inbound) histogram mis-times requests on reused
+			// Apache prefork workers (WordPress heartbeat lands in +Inf while the
+			// ingress sees <250ms), so it is only the fallback.
+			raw := builtinLatencyRaw[app.Id]
 			if len(raw) == 0 {
-				raw = builtinLatencyRaw[app.Id]
+				raw = inboundLatencyRaw[app.Id]
 			}
 			if len(raw) > 0 {
 				app.LatencySLIs = append(app.LatencySLIs, &model.LatencySLI{
