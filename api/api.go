@@ -1245,7 +1245,8 @@ func (api *Api) Application(w http.ResponseWriter, r *http.Request, u *db.User) 
 	app.AddReport(model.AuditReportProfiling, &model.Widget{Profiling: &model.Profiling{ApplicationId: app.Id}, Width: "100%"})
 	app.AddReport(model.AuditReportTracing, &model.Widget{Tracing: &model.Tracing{ApplicationId: app.Id}, Width: "100%"})
 
-	utils.WriteJson(w, api.WithContext(u, project, cacheStatus, world, views.Application(project, world, app)))
+	view := api.filterAppMapForUser(u, projectId, world, views.Application(project, world, app))
+	utils.WriteJson(w, api.WithContext(u, project, cacheStatus, world, view))
 }
 
 func (api *Api) Incidents(w http.ResponseWriter, r *http.Request, u *db.User) {

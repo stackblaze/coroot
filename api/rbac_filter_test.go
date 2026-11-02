@@ -3,6 +3,7 @@ package api
 import (
 	"testing"
 
+	"github.com/coroot/coroot/api/views/application"
 	"github.com/coroot/coroot/api/views/overview"
 	"github.com/coroot/coroot/db"
 	"github.com/coroot/coroot/model"
@@ -80,4 +81,46 @@ func TestRenderSearchFiltersByApplicationPermission(t *testing.T) {
 	search = api.renderSearch(viewer, projectId, w)
 	assert.Len(t, search.Applications, 2)
 	assert.False(t, api.hasRestrictedAppAccess(viewer, projectId))
+}
+
+func TestFilterAppMapForUserDropsForeignNeighbours(t *testing.T) {
+	projectId := "proj1"
+	roleName := rbac.RoleName("kubero-twenty-production")
+	roles := staticRoles{
+		rbac.NewRole(roleName,
+			rbac.NewPermission(rbac.ScopeApplication, rbac.ActionView, rbac.Object{
+				"project_id":            projectId,
+				"application_namespace": "twenty-production",
+				"application_kind":      "*",
+				"application_name":      "*",
+			}),
+		),
+	}
+	api := &Api{roles: roles}
+	user := &db.User{Email: "kubero+u1+twenty-production@handoff.local", Roles: []rbac.RoleName{roleName}}
+
+	web := model.NewApplication(model.NewApplicationId(projectId, "twenty-production", model.ApplicationKindDeployment, "twenty-kuberoapp-web"))
+	agent := model.NewApplication(model.NewApplicationId(projectId, "coroot", model.ApplicationKindDeployment, "coroot-cluster-agent"))
+	operator := model.NewApplication(model.NewApplicationId(projectId, "operators", model.ApplicationKindDeployment, "cloudnative-pg"))
+	// The Kubernetes API as Coroot sees it: no namespace.
+	k3s := model.NewApplication(model.NewApplicationId(projectId, "", model.ApplicationKindExternalService, "k3s"))
+	w := &model.World{Applications: map[model.ApplicationId]*model.Application{
+		web.Id: web, agent.Id: agent, operator.Id: operator, k3s.Id: k3s,
+	}}
+	view := func() *application.View {
+		return &application.View{AppMap: &application.AppMap{
+			Clients:      []*application.Application{{Id: agent.Id}, {Id: web.Id}, {Id: operator.Id}},
+			Dependencies: []*application.Application{{Id: k3s.Id}},
+		}}
+	}
+
+	v := api.filterAppMapForUser(user, projectId, w, view())
+	require.Len(t, v.AppMap.Clients, 1)
+	assert.Equal(t, web.Id, v.AppMap.Clients[0].Id)
+	assert.Empty(t, v.AppMap.Dependencies)
+
+	// No user (auth off): everything stays.
+	v = api.filterAppMapForUser(nil, projectId, w, view())
+	assert.Len(t, v.AppMap.Clients, 3)
+	assert.Len(t, v.AppMap.Dependencies, 1)
 }
