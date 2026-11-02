@@ -3,6 +3,7 @@ package tracing
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
 	"sort"
 	"strings"
@@ -129,6 +130,13 @@ func Render(ctx context.Context, ch *clickhouse.Client, app *model.Application, 
 	var histogram []model.HistogramBucket
 	var spans []*model.TraceSpan
 	clients := map[spanKey]string{}
+	// Requests from monitoring and control-plane applications (metrics
+	// scrapes, kubelet probes) are not the application's own traffic; the
+	// overview Traces page hides them by default and this view always does.
+	var ignoredPeerAddrs []string
+	if !app.Category.Monitoring() && !app.Category.ControlPlane() {
+		ignoredPeerAddrs = getAuxPodIps(w)
+	}
 	switch {
 	case traceId != "":
 		spans, err = ch.GetSpansByTraceId(ctx, traceId)
@@ -138,10 +146,6 @@ func Render(ctx context.Context, ch *clickhouse.Client, app *model.Application, 
 
 	case (source == "" || source == model.TraceSourceOtel) && otelService != "":
 		source = model.TraceSourceOtel
-		var ignoredPeerAddrs []string
-		if !app.Category.Monitoring() {
-			ignoredPeerAddrs = getMonitoringPodIps(w)
-		}
 		wg := sync.WaitGroup{}
 		wg.Add(2)
 		go func() {
@@ -195,7 +199,8 @@ func Render(ctx context.Context, ch *clickhouse.Client, app *model.Application, 
 			defer wg.Done()
 			var e error
 			sq := clickhouse.SpanQuery{
-				Ctx: w.Ctx,
+				Ctx:              w.Ctx,
+				ExcludePeerAddrs: ignoredPeerAddrs,
 			}
 			histogram, e = ch.GetInboundSpansHistogram(ctx, sq, maps.Keys(appClients), listens)
 			if e != nil {
@@ -206,13 +211,14 @@ func Render(ctx context.Context, ch *clickhouse.Client, app *model.Application, 
 			defer wg.Done()
 			var e error
 			sq := clickhouse.SpanQuery{
-				Ctx:     w.Ctx,
-				TsFrom:  tsFrom,
-				TsTo:    tsTo,
-				DurFrom: durFrom,
-				DurTo:   durTo,
-				Errors:  errors,
-				Limit:   limit,
+				Ctx:              w.Ctx,
+				TsFrom:           tsFrom,
+				TsTo:             tsTo,
+				DurFrom:          durFrom,
+				DurTo:            durTo,
+				Errors:           errors,
+				Limit:            limit,
+				ExcludePeerAddrs: ignoredPeerAddrs,
 			}
 			spans, e = ch.GetInboundSpans(ctx, sq, maps.Keys(appClients), listens)
 			if e != nil {
@@ -383,16 +389,23 @@ func getAppListens(app *model.Application) []model.Listen {
 	return res
 }
 
-func getMonitoringPodIps(w *model.World) []string {
+// getAuxPodIps returns every address the monitoring and control-plane
+// applications listen on: pod IPs, and the node IPs of host-network agents
+// such as the kubelet, whose probes arrive from the node address.
+func getAuxPodIps(w *model.World) []string {
+	seen := map[string]bool{}
 	var res []string
 	for _, a := range w.Applications {
-		if a.Category.Monitoring() {
-			for _, i := range a.Instances {
-				for l := range i.TcpListens {
-					if l.Port == "0" {
-						res = append(res, l.IP)
-					}
+		if !a.Category.Monitoring() && !a.Category.ControlPlane() {
+			continue
+		}
+		for _, i := range a.Instances {
+			for l := range i.TcpListens {
+				if ip := net.ParseIP(l.IP); ip == nil || ip.IsLoopback() || seen[l.IP] {
+					continue
 				}
+				seen[l.IP] = true
+				res = append(res, l.IP)
 			}
 		}
 	}
