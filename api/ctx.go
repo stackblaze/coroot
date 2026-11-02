@@ -28,6 +28,9 @@ type Context struct {
 	License        *License                          `json:"license,omitempty"`
 	Multicluster   bool                              `json:"multicluster"`
 	MemberProjects []string                          `json:"member_projects,omitempty"`
+	// TracesLocked: the user's role may not view the project's traces; the
+	// menu shows the entry locked and the page an upgrade prompt.
+	TracesLocked bool `json:"traces_locked"`
 }
 
 type GitOpsStatus struct {
@@ -97,6 +100,7 @@ func (api *Api) WithContext(u *db.User, p *db.Project, cacheStatus *cache.Status
 			Argocd:         gitOpsStatus(w, gitOpsVisible && w != nil && w.ArgoCD != nil, overview.CountArgoCDIssues),
 			Multicluster:   p.Multicluster(),
 			MemberProjects: p.Settings.MemberProjects,
+			TracesLocked:   u != nil && !api.IsAllowed(u, rbac.Actions.Project(string(p.Id)).Traces().View()),
 		},
 		Data: data,
 	}

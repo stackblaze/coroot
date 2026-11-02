@@ -1,6 +1,43 @@
 <template>
     <Views :error="error" class="traces">
-        <v-alert v-if="view.message" color="info" outlined text class="message">
+        <!-- The role may not view traces (StackBlaze: the workspace's plan has
+             no tracing): an upgrade prompt and window instead of an error. -->
+        <template v-if="locked">
+            <v-alert color="info" outlined text class="message">
+                <div class="d-flex align-center gap-2">
+                    <v-icon color="info">mdi-lock-outline</v-icon>
+                    <span class="font-weight-medium">Tracing is part of the Business plan.</span>
+                </div>
+                <div class="mt-1">OpenTelemetry traces for your apps appear here once your workspace is on a plan that includes tracing.</div>
+                <div class="mt-2">
+                    <v-btn color="primary" small @click="upgradeDialog = true">Unlock tracing</v-btn>
+                </div>
+            </v-alert>
+            <v-dialog v-model="upgradeDialog" max-width="520">
+                <v-card>
+                    <v-card-title class="d-flex align-center gap-2">
+                        <v-icon color="primary">mdi-chart-timeline</v-icon>
+                        Unlock tracing
+                    </v-card-title>
+                    <v-card-text>
+                        <p>See every request's path through your apps with OpenTelemetry traces.</p>
+                        <div v-for="d in upgradeDetails" :key="d.title" class="mt-3">
+                            <div class="font-weight-medium">{{ d.title }}</div>
+                            <div class="grey--text text--lighten-1">{{ d.body }}</div>
+                        </div>
+                        <p class="mt-4 mb-0">
+                            Tracing is included in the Business plan. Choose a plan in StackBlaze to turn it on for this workspace.
+                        </p>
+                    </v-card-text>
+                    <v-card-actions>
+                        <v-spacer />
+                        <v-btn text @click="upgradeDialog = false">Not now</v-btn>
+                        <v-btn v-if="upgradeUrl" color="primary" :href="upgradeUrl">See plans</v-btn>
+                    </v-card-actions>
+                </v-card>
+            </v-dialog>
+        </template>
+        <v-alert v-else-if="view.message" color="info" outlined text class="message">
             <template v-if="view.message === 'not_found'">
                 This page only shows traces from OpenTelemetry integrations, not from eBPF.
                 <div class="mt-2">
@@ -410,6 +447,13 @@ export default {
             },
             loading: false,
             error: '',
+            locked: false,
+            upgradeDialog: false,
+            upgradeDetails: [
+                { title: 'No code changes', body: 'Java, Node.js, Python and .NET apps are instrumented automatically on their next deploy.' },
+                { title: 'Traces here', body: 'Latency, errors and the spans behind each request, on this page.' },
+                { title: 'Per app', body: 'Turn tracing on only for the apps you want to watch.' },
+            ],
         };
     },
 
@@ -436,6 +480,21 @@ export default {
     },
 
     computed: {
+        upgradeUrl() {
+            // Set on handoff consume (coroot_return_url): the embedding
+            // product's page. Its billing page opens the plan-upgrade window
+            // for the tracing gate.
+            const m = document.cookie.match(/(?:^|; )coroot_return_url=([^;]*)(?:;|$)/);
+            if (!m) {
+                return '';
+            }
+            try {
+                const u = new URL(decodeURIComponent(m[1]));
+                return `${u.origin}/billing?upgrade=TRACING_PLAN_REQUIRED`;
+            } catch {
+                return '';
+            }
+        },
         views() {
             return [
                 { name: 'overview', title: 'overview', icon: 'mdi-format-list-checkbox' },
@@ -524,8 +583,17 @@ export default {
             const query = this.$route.query.query || '';
             this.loading = true;
             this.error = '';
-            this.$api.getOverview('traces', query, (data, error) => {
+            this.$api.getOverview('traces', query, (data, error, status) => {
                 this.loading = false;
+                if (status === 403) {
+                    if (!this.locked) {
+                        this.upgradeDialog = true;
+                    }
+                    this.locked = true;
+                    this.view = {};
+                    return;
+                }
+                this.locked = false;
                 if (error) {
                     this.error = error;
                     return;
