@@ -1,5 +1,5 @@
 <template>
-    <v-dialog v-model="dialog" max-width="800">
+    <v-dialog v-model="dialog" :max-width="handoff ? 1100 : 800">
         <template #activator="{ on, attrs }">
             <v-btn :color="color" :outlined="outlined" :small="small" v-bind="attrs" v-on="on">
                 <slot></slot>
@@ -9,35 +9,12 @@
              URL, no key, no collector of their own); the platform collects
              traces from their apps. Admins keep the upstream dialog below. -->
         <v-card v-if="handoff" class="pa-5">
-            <div class="d-flex align-center text-h5 mb-4">
+            <div class="d-flex align-center text-h5 mb-2">
                 Send traces from your apps
                 <v-spacer />
                 <v-btn icon @click="dialog = false"><v-icon>mdi-close</v-icon></v-btn>
             </div>
-            <p>
-                Traces show every request's path through an app. Your apps never talk to Coroot directly: the platform collects their traces and keeps
-                them private to your workspace.
-            </p>
-
-            <div class="subtitle-1 font-weight-medium mt-4">1. Automatic (recommended)</div>
-            <p class="mb-2">
-                In StackBlaze, open the app's settings and turn <b>Tracing</b> on. Java, Node.js, Python and .NET apps are instrumented on their next
-                deploy, with no code changes.
-            </p>
-            <v-btn v-if="stackblazeUrl" :href="stackblazeUrl" color="primary" small>Open StackBlaze</v-btn>
-
-            <div class="subtitle-1 font-weight-medium mt-6">2. Your own OpenTelemetry SDK</div>
-            <p class="mb-2">
-                Already instrumented (Go, PHP, Ruby, Rust, …)? Turn Tracing on for the app with <b>Other: my own OpenTelemetry SDK</b> and point the
-                SDK at the platform collector:
-            </p>
-            <Code>
-                OTEL_EXPORTER_OTLP_ENDPOINT={{ platformEndpoint }}
-                OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf OTEL_SERVICE_NAME=&lt;your app name&gt;
-            </Code>
-            <p class="mt-2 mb-0 grey--text">
-                No API key is needed: the collector accepts traces only from apps with Tracing on and tags them with your workspace.
-            </p>
+            <TracingGuide compact />
         </v-card>
         <v-card v-else class="pa-5">
             <div class="d-flex align-center text-h5 mb-4">
@@ -166,7 +143,8 @@ service:
 
 <script>
 import Code from '../components/Code.vue';
-import { PLATFORM_OTLP_ENDPOINT, isHandoffUser, returnUrlOrigin } from '../utils/handoff';
+import TracingGuide from '../components/TracingGuide.vue';
+import { isHandoffUser } from '../utils/handoff';
 
 export default {
     props: {
@@ -175,7 +153,7 @@ export default {
         small: Boolean,
     },
 
-    components: { Code },
+    components: { Code, TracingGuide },
 
     data() {
         const local = ['127.0.0.1', 'localhost'].some((v) => location.origin.includes(v));
@@ -194,12 +172,6 @@ export default {
     computed: {
         handoff() {
             return isHandoffUser(this.$api);
-        },
-        stackblazeUrl() {
-            return returnUrlOrigin();
-        },
-        platformEndpoint() {
-            return PLATFORM_OTLP_ENDPOINT;
         },
     },
 
