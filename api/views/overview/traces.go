@@ -79,7 +79,7 @@ type Filter struct {
 	Value string `json:"value"`
 }
 
-func RenderTraces(ctx context.Context, chs clickhouse.Clients, w *model.World, query string, restrict bool, fullWorld *model.World) *Traces {
+func RenderTraces(ctx context.Context, chs clickhouse.Clients, w *model.World, query string, restrict bool, fullWorld *model.World, namespaces []string) *Traces {
 	res := &Traces{}
 
 	if chs.Error != nil {
@@ -101,12 +101,16 @@ func RenderTraces(ctx context.Context, chs clickhouse.Clients, w *model.World, q
 	}
 
 	if restrict {
-		services := traceServicesForApps(ctx, chs, w, fullWorld)
-		if len(services) == 0 {
-			res.Message = "not_found"
-			return res
+		if len(namespaces) > 0 {
+			sq.Scope = TraceScope(w, namespaces)
+		} else {
+			services := traceServicesForApps(ctx, chs, w, fullWorld)
+			if len(services) == 0 {
+				res.Message = "not_found"
+				return res
+			}
+			sq.Services = services
 		}
-		sq.Services = services
 	}
 
 	if !q.IncludeAux {
@@ -403,6 +407,45 @@ func FilterSpansByService(spans []*model.TraceSpan, allowed *utils.StringSet) []
 // applications of appsWorld.
 func TraceServicesForApps(ctx context.Context, chs clickhouse.Clients, appsWorld, fullWorld *model.World) []string {
 	return traceServicesForApps(ctx, chs, appsWorld, fullWorld)
+}
+
+// AgentTraceServices are the service names of the agent's (eBPF) spans for
+// the applications in w: the container service names, as for logs. The agent
+// names them from Kubernetes metadata, so they can be trusted.
+func AgentTraceServices(w *model.World) []string {
+	out := utils.NewStringSet()
+	if w != nil {
+		for _, app := range w.Applications {
+			out.Add(app.LogServices()...)
+		}
+	}
+	return out.Items()
+}
+
+// TraceScope limits span queries to the viewer's namespaces (collector-set
+// attribute) and to the agent's spans of the applications in w.
+func TraceScope(w *model.World, namespaces []string) *clickhouse.NamespaceScope {
+	return &clickhouse.NamespaceScope{Namespaces: namespaces, Services: AgentTraceServices(w)}
+}
+
+// TraceServicesInNamespaces lists the trace services a viewer limited to
+// namespaces may see: the agent's services of the applications in appsWorld
+// and the OpenTelemetry services whose spans the collector tagged with one of
+// the namespaces.
+func TraceServicesInNamespaces(ctx context.Context, chs clickhouse.Clients, appsWorld *model.World, namespaces []string) []string {
+	out := utils.NewStringSet(AgentTraceServices(appsWorld)...)
+	if appsWorld == nil || len(namespaces) == 0 {
+		return out.Items()
+	}
+	for _, ch := range chs.Clients {
+		svcs, err := ch.GetServicesFromTracesInNamespaces(ctx, appsWorld.Ctx.From, namespaces)
+		if err != nil {
+			klog.Errorln(err)
+			continue
+		}
+		out.Add(svcs...)
+	}
+	return out.Items()
 }
 
 func traceServicesForApps(ctx context.Context, chs clickhouse.Clients, appsWorld, fullWorld *model.World) []string {

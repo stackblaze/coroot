@@ -529,13 +529,18 @@ func (api *Api) Overview(w http.ResponseWriter, r *http.Request, u *db.User) {
 	renderWorld := world
 	restrictTelemetry := false
 	restricted := api.hasRestrictedAppAccess(u, projectId)
+	var scopeNamespaces []string
 	if restricted && (view == "logs" || view == "traces" || view == "risks") {
 		renderWorld = api.worldWithViewableApps(u, projectId, world)
 		restrictTelemetry = view == "logs" || view == "traces"
+		if view == "traces" {
+			scopeNamespaces, _ = api.restrictedNamespaces(u, projectId, world)
+		}
 	}
 	ov := views.Overview(r.Context(), chs, project, renderWorld, view, r.URL.Query().Get("query"), views.OverviewOpts{
 		RestrictTelemetry: restrictTelemetry,
 		FullWorld:         world,
+		Namespaces:        scopeNamespaces,
 	})
 	ov = api.filterOverviewForUser(u, projectId, world, ov)
 	utils.WriteJson(w, api.WithContext(u, project, cacheStatus, world, ov))
@@ -2392,13 +2397,24 @@ func (api *Api) Tracing(w http.ResponseWriter, r *http.Request, u *db.User) {
 	}
 	defer ch.Close()
 	var allowService func(string) bool
+	var scope *clickhouse.NamespaceScope
 	restricted := api.hasRestrictedAppAccess(u, projectId)
 	if restricted {
 		viewable := api.worldWithViewableApps(u, projectId, world)
-		allowed := utils.NewStringSet(overview.TraceServicesForApps(r.Context(), clickhouse.Clients{Clients: []*clickhouse.Client{ch}}, viewable, world)...)
+		chs := clickhouse.Clients{Clients: []*clickhouse.Client{ch}}
+		var services []string
+		if namespaces, _ := api.restrictedNamespaces(u, projectId, world); len(namespaces) > 0 {
+			// Spans are limited by the collector-set namespace attribute;
+			// the service list is what that scope contains.
+			scope = overview.TraceScope(viewable, namespaces)
+			services = overview.TraceServicesInNamespaces(r.Context(), chs, viewable, namespaces)
+		} else {
+			services = overview.TraceServicesForApps(r.Context(), chs, viewable, world)
+		}
+		allowed := utils.NewStringSet(services...)
 		allowService = allowed.Has
 	}
-	res := views.Tracing(r.Context(), ch, app, q, world, allowService)
+	res := views.Tracing(r.Context(), ch, app, q, world, allowService, scope)
 	if restricted {
 		limitTraceServices(res, allowService)
 	}

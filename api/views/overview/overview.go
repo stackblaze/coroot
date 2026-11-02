@@ -30,6 +30,10 @@ type RenderOpts struct {
 	RestrictTelemetry bool
 	// FullWorld is used for GuessService uniqueness when w is a restricted copy.
 	FullWorld *model.World
+	// Namespaces, with RestrictTelemetry, are the namespaces the viewer may
+	// see: OpenTelemetry spans are then limited by the collector-set
+	// namespace attribute instead of by guessed service names.
+	Namespaces []string
 }
 
 func Render(ctx context.Context, chs clickhouse.Clients, project *db.Project, w *model.World, view, query string, opts RenderOpts) *Overview {
@@ -56,7 +60,7 @@ func Render(ctx context.Context, chs clickhouse.Clients, project *db.Project, w 
 	case "deployments":
 		v.Deployments = renderDeployments(w)
 	case "traces":
-		v.Traces = RenderTraces(ctx, chs, w, query, opts.RestrictTelemetry, fullWorld)
+		v.Traces = RenderTraces(ctx, chs, w, query, opts.RestrictTelemetry, fullWorld, opts.Namespaces)
 	case "logs":
 		v.Logs = renderLogs(ctx, chs, w, query, opts.RestrictTelemetry, fullWorld)
 	case "costs":
