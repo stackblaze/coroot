@@ -39,9 +39,12 @@
         </template>
         <v-alert v-else-if="view.message" color="info" outlined text class="message">
             <template v-if="view.message === 'not_found'">
-                This page only shows traces from OpenTelemetry integrations, not from eBPF.
+                <template v-if="handoff"
+                    >No traces yet. Turn Tracing on for an app in StackBlaze; its traces appear here after the next deploy.</template
+                >
+                <template v-else>This page only shows traces from OpenTelemetry integrations, not from eBPF.</template>
                 <div class="mt-2">
-                    <OpenTelemetryIntegration color="primary">Integrate OpenTelemetry</OpenTelemetryIntegration>
+                    <OpenTelemetryIntegration color="primary">{{ integrateLabel }}</OpenTelemetryIntegration>
                 </div>
             </template>
             <template v-if="view.message === 'no_clickhouse'"> Clickhouse integration is not configured. </template>
@@ -50,7 +53,7 @@
         <template v-else>
             <div class="d-flex">
                 <v-spacer />
-                <OpenTelemetryIntegration small color="primary">Integrate OpenTelemetry</OpenTelemetryIntegration>
+                <OpenTelemetryIntegration small color="primary">{{ integrateLabel }}</OpenTelemetryIntegration>
             </div>
 
             <v-alert v-if="view.error" color="error" icon="mdi-alert-octagon-outline" outlined text class="mt-2">
@@ -433,6 +436,7 @@ import Heatmap from '../components/Heatmap.vue';
 import TracingTrace from '../components/TracingTrace.vue';
 import FlameGraph from '../components/FlameGraph.vue';
 import OpenTelemetryIntegration from '@/views/OpenTelemetryIntegration.vue';
+import { isHandoffUser, returnUrlOrigin } from '../utils/handoff';
 
 export default {
     components: { Views, OpenTelemetryIntegration, FlameGraph, TracingTrace, Heatmap },
@@ -480,20 +484,17 @@ export default {
     },
 
     computed: {
+        handoff() {
+            return isHandoffUser(this.$api);
+        },
+        integrateLabel() {
+            return this.handoff ? 'Send traces from your apps' : 'Integrate OpenTelemetry';
+        },
         upgradeUrl() {
-            // Set on handoff consume (coroot_return_url): the embedding
-            // product's page. Its billing page opens the plan-upgrade window
-            // for the tracing gate.
-            const m = document.cookie.match(/(?:^|; )coroot_return_url=([^;]*)(?:;|$)/);
-            if (!m) {
-                return '';
-            }
-            try {
-                const u = new URL(decodeURIComponent(m[1]));
-                return `${u.origin}/billing?upgrade=TRACING_PLAN_REQUIRED`;
-            } catch {
-                return '';
-            }
+            // The embedding product's billing page opens the plan-upgrade
+            // window for the tracing gate (coroot_return_url cookie).
+            const origin = returnUrlOrigin();
+            return origin ? `${origin}/billing?upgrade=TRACING_PLAN_REQUIRED` : '';
         },
         views() {
             return [
