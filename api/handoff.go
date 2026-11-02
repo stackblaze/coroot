@@ -27,13 +27,21 @@ const (
 )
 
 type handoffToken struct {
-	UserId   int
-	Redirect string
-	Theme    string // light|dark|auto — from Kubero (or redirect ?theme=)
-	Expires  time.Time
+	UserId    int
+	Redirect  string
+	Theme     string // light|dark|auto — from Kubero (or redirect ?theme=)
+	ReturnURL string // the embedding product's page, for links back
+	Workspace string
+	Expires   time.Time
 }
 
-const corootThemeCookie = "coroot_theme"
+const (
+	corootThemeCookie     = "coroot_theme"
+	corootReturnURLCookie = "coroot_return_url"
+	corootWorkspaceCookie = "coroot_workspace"
+	maxHandoffReturnURL   = 2048
+	maxHandoffWorkspace   = 200
+)
 
 type handoffStore struct {
 	mu     sync.Mutex
@@ -187,10 +195,12 @@ func (api *Api) CreateHandoff(w http.ResponseWriter, r *http.Request) {
 		theme = themeFromRedirect(redirect)
 	}
 	api.handoffs.put(token, handoffToken{
-		UserId:   user.Id,
-		Redirect: redirect,
-		Theme:    theme,
-		Expires:  time.Now().Add(ttl),
+		UserId:    user.Id,
+		Redirect:  redirect,
+		Theme:     theme,
+		ReturnURL: sanitizeHandoffReturnURL(form.ReturnURL),
+		Workspace: truncateHandoffField(form.Workspace, maxHandoffWorkspace),
+		Expires:   time.Now().Add(ttl),
 	})
 
 	handoffPath := path.Join(api.cfg.UrlBasePath, "api/auth/handoff")
@@ -244,6 +254,20 @@ func (api *Api) ConsumeHandoff(w http.ResponseWriter, r *http.Request) {
 	}
 	if theme != "" {
 		target = appendQueryParam(target, "theme", theme)
+	}
+	// Where the embedding product is, readable by the SPA (links back, the
+	// plan-upgrade prompt on pages the role may not view).
+	for name, value := range map[string]string{corootReturnURLCookie: ht.ReturnURL, corootWorkspaceCookie: ht.Workspace} {
+		if value == "" {
+			continue
+		}
+		http.SetCookie(w, &http.Cookie{
+			Name:     name,
+			Value:    url.QueryEscape(value),
+			Path:     "/",
+			Expires:  time.Now().Add(SessionCookieTTL),
+			SameSite: http.SameSiteLaxMode,
+		})
 	}
 	http.Redirect(w, r, target, http.StatusFound)
 }
@@ -343,6 +367,28 @@ func (api *Api) checkHandoffSecret(r *http.Request) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(provided), []byte(secret)) == 1
+}
+
+// sanitizeHandoffReturnURL keeps an absolute http(s) URL without
+// credentials, at most maxHandoffReturnURL long; anything else is dropped.
+func sanitizeHandoffReturnURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || len(raw) > maxHandoffReturnURL {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+		return ""
+	}
+	return u.String()
+}
+
+func truncateHandoffField(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if len(s) > max {
+		return s[:max]
+	}
+	return s
 }
 
 func sanitizeHandoffRedirect(redirect string) string {

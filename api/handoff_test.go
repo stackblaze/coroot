@@ -167,3 +167,13 @@ func TestCreateHandoffRefusesRolesItDoesNotManage(t *testing.T) {
 	w := create(`{"email":"tenant@example.com","role":"kubero-team-prod",` + perms + `}`)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 }
+
+func TestSanitizeHandoffReturnURL(t *testing.T) {
+	assert.Equal(t, "https://dashboard.example.com/apps/x", sanitizeHandoffReturnURL(" https://dashboard.example.com/apps/x "))
+	assert.Equal(t, "", sanitizeHandoffReturnURL("/relative"))
+	assert.Equal(t, "", sanitizeHandoffReturnURL("javascript:alert(1)"))
+	assert.Equal(t, "", sanitizeHandoffReturnURL("https://user:pw@dashboard.example.com/"))
+	assert.Equal(t, "", sanitizeHandoffReturnURL(""))
+	assert.Equal(t, "ab", truncateHandoffField("  ab  ", 10))
+	assert.Equal(t, "abc", truncateHandoffField("abcdef", 3))
+}

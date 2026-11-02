@@ -50,7 +50,11 @@
                     :class="{ 'v-list-item--active sb-nav__item--active': id === view }"
                 >
                     <v-list-item-icon class="mr-3">
-                        <span v-if="id === 'incidents' && menuCollapsed && incidentsCount">
+                        <!-- Traces the role may not view (StackBlaze: plan without tracing). -->
+                        <span v-if="id === 'traces' && context.traces_locked" :title="menuCollapsed ? 'Traces: Business plan' : undefined">
+                            <v-icon small>mdi-lock-outline</v-icon>
+                        </span>
+                        <span v-else-if="id === 'incidents' && menuCollapsed && incidentsCount">
                             <v-badge color="red" dot offset-y="6">
                                 <v-icon small>{{ v.icon }}</v-icon>
                             </v-badge>

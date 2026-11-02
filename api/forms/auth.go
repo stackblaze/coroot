@@ -63,6 +63,11 @@ type HandoffCreateForm struct {
 	// Theme is light|dark|auto from the embedding product (e.g. Kubero).
 	// Applied on handoff consume so the SPA matches the caller's UI.
 	Theme string `json:"theme"`
+	// ReturnURL is the embedding product's page to go back to (absolute
+	// http(s) URL); Workspace its display name. Both are handed to the SPA
+	// as cookies on consume.
+	ReturnURL string `json:"return_url"`
+	Workspace string `json:"workspace"`
 }
 
 func (f *HandoffCreateForm) Valid() bool {

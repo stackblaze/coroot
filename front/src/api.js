@@ -26,6 +26,7 @@ export default class Api {
         argocd: null,
         multicluster: false,
         member_projects: [],
+        traces_locked: false,
     };
 
     constructor(router, vuetify, basePath) {
@@ -68,6 +69,7 @@ export default class Api {
                     this.context.argocd = response.data.context.argocd;
                     this.context.multicluster = response.data.context.multicluster;
                     this.context.member_projects = response.data.context.member_projects || [];
+                    this.context.traces_locked = !!response.data.context.traces_locked;
                 }
                 try {
                     const data = response.data.data !== undefined ? response.data.data : response.data;
