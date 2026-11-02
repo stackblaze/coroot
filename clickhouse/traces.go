@@ -134,6 +134,11 @@ func (c *Client) GetParentSpans(ctx context.Context, spans []*model.TraceSpan) (
 }
 
 func (c *Client) GetSpansByTraceId(ctx context.Context, traceId string) ([]*model.TraceSpan, error) {
+	return c.GetSpansByTraceIdScoped(ctx, traceId, nil)
+}
+
+// GetSpansByTraceIdScoped is GetSpansByTraceId limited to scope (nil: all).
+func (c *Client) GetSpansByTraceIdScoped(ctx context.Context, traceId string, scope *NamespaceScope) ([]*model.TraceSpan, error) {
 	var minTs, maxTs time.Time
 	err := c.QueryRow(ctx,
 		"SELECT min(Start), max(End)+1 FROM @@table_otel_traces_trace_id_ts@@ WHERE TraceId = @traceId",
@@ -145,13 +150,41 @@ func (c *Client) GetSpansByTraceId(ctx context.Context, traceId string) ([]*mode
 	q := SpanQuery{
 		TsFrom: timeseries.TimeFromStandard(minTs),
 		TsTo:   timeseries.TimeFromStandard(maxTs),
+		Scope:  scope,
 	}
-	return c.getSpans(ctx, q, "Timestamp",
-		[]string{"TraceId = @traceId"},
-		[]any{
-			clickhouse.Named("traceId", traceId),
-		},
+	filters, args := q.scopeFilter()
+	filters = append(filters, "TraceId = @traceId")
+	args = append(args, clickhouse.Named("traceId", traceId))
+	return c.getSpans(ctx, q, "Timestamp", filters, args)
+}
+
+// GetServicesFromTracesInNamespaces lists the services with spans tagged with
+// one of namespaces since from. Reads the spans table: the service-name
+// table has no ResourceAttributes.
+func (c *Client) GetServicesFromTracesInNamespaces(ctx context.Context, from timeseries.Time, namespaces []string) ([]string, error) {
+	if len(namespaces) == 0 {
+		return nil, nil
+	}
+	rows, err := c.Query(ctx,
+		"SELECT DISTINCT ServiceName FROM @@table_otel_traces@@ WHERE Timestamp >= @from AND ResourceAttributes['"+TraceNamespaceAttr+"'] IN (@namespaces)",
+		clickhouse.DateNamed("from", from.ToStandard(), clickhouse.NanoSeconds),
+		clickhouse.Named("namespaces", namespaces),
 	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+	var res []string
+	for rows.Next() {
+		var s string
+		if err = rows.Scan(&s); err != nil {
+			return nil, err
+		}
+		res = append(res, s)
+	}
+	return res, nil
 }
 
 func (c *Client) getOtelTracesServiceName(ctx context.Context, world *model.World, app *model.Application) (string, error) {
@@ -674,6 +707,19 @@ type SpanFilter struct {
 	Value string
 }
 
+// TraceNamespaceAttr is the resource attribute the platform's OpenTelemetry
+// collector sets on every span from the sending pod's address. Senders cannot
+// choose it, so it is the attribute namespace-scoped viewers are limited by.
+const TraceNamespaceAttr = "k8s.namespace.name"
+
+// NamespaceScope limits spans to those tagged with one of Namespaces
+// (TraceNamespaceAttr) or, for the agent's own spans, to Services. An empty
+// scope matches nothing.
+type NamespaceScope struct {
+	Namespaces []string
+	Services   []string
+}
+
 type SpanQuery struct {
 	Ctx timeseries.Context
 
@@ -690,6 +736,8 @@ type SpanQuery struct {
 
 	Filters          []SpanFilter
 	ExcludePeerAddrs []string
+	// Scope, when set, is applied on top of Services and Filters.
+	Scope *NamespaceScope
 
 	Diff bool
 }
@@ -781,6 +829,10 @@ func (c *Client) useTracesHistogram(ctx context.Context, q SpanQuery, from times
 }
 
 func (q *SpanQuery) filtersOnHistogramDimensions() bool {
+	if q.Scope != nil {
+		// The histogram table has no ResourceAttributes.
+		return false
+	}
 	for _, f := range q.Filters {
 		switch f.Field {
 		case "ServiceName", "SpanName", "SpanKind", "NetSockPeerAddr":
@@ -801,9 +853,29 @@ func (q *SpanQuery) SpansByServiceNameFilter(fromMV bool) ([]string, []any) {
 	return filter, args
 }
 
-func (q *SpanQuery) Filter() ([]string, []any) {
-	var filter []string
+// scopeFilter renders Scope; nothing when there is no scope.
+func (q *SpanQuery) scopeFilter() ([]string, []any) {
+	if q.Scope == nil {
+		return nil, nil
+	}
+	var parts []string
 	var args []any
+	if len(q.Scope.Namespaces) > 0 {
+		parts = append(parts, "ResourceAttributes['"+TraceNamespaceAttr+"'] IN (@scopeNamespaces)")
+		args = append(args, clickhouse.Named("scopeNamespaces", q.Scope.Namespaces))
+	}
+	if len(q.Scope.Services) > 0 {
+		parts = append(parts, "ServiceName IN (@scopeServices)")
+		args = append(args, clickhouse.Named("scopeServices", q.Scope.Services))
+	}
+	if len(parts) == 0 {
+		return []string{"0"}, nil
+	}
+	return []string{"(" + strings.Join(parts, " OR ") + ")"}, args
+}
+
+func (q *SpanQuery) Filter() ([]string, []any) {
+	filter, args := q.scopeFilter()
 	switch len(q.Services) {
 	case 0:
 	case 1:

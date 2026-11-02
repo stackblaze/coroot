@@ -75,3 +75,28 @@ func TestConvertIntervalToSeconds(t *testing.T) {
 	assert.Equal(t, uint64(0), convertIntervalToSeconds(10, "INVALID"))
 	assert.Equal(t, uint64(0), convertIntervalToSeconds(0, "DAY"))
 }
+
+func TestSpanQueryScopeFilter(t *testing.T) {
+	q := SpanQuery{Scope: &NamespaceScope{Namespaces: []string{"shop-production"}, Services: []string{"/k8s/shop-production/web"}}}
+	filter, args := q.Filter()
+	assert.Equal(t, []string{"(ResourceAttributes['k8s.namespace.name'] IN (@scopeNamespaces) OR ServiceName IN (@scopeServices))"}, filter)
+	assert.Len(t, args, 2)
+	assert.False(t, q.filtersOnHistogramDimensions())
+
+	// Scope and Services both apply.
+	q.Services = []string{"api"}
+	filter, _ = q.Filter()
+	assert.Len(t, filter, 2)
+
+	// An empty scope matches nothing.
+	empty := SpanQuery{Scope: &NamespaceScope{}}
+	filter, args = empty.Filter()
+	assert.Equal(t, []string{"0"}, filter)
+	assert.Empty(t, args)
+
+	// No scope: unchanged.
+	none := SpanQuery{}
+	filter, _ = none.Filter()
+	assert.Empty(t, filter)
+	assert.True(t, none.filtersOnHistogramDimensions())
+}

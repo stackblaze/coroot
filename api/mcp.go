@@ -1323,10 +1323,12 @@ func (h *MCPHandler) runTracesQuery(ctx context.Context, req mcp.CallToolRequest
 	queryJSON, _ := json.Marshal(q)
 	renderWorld := world
 	restricted := h.Api.hasRestrictedAppAccess(user, string(project.Id))
+	var namespaces []string
 	if restricted {
 		renderWorld = h.Api.worldWithViewableApps(user, string(project.Id), world)
+		namespaces, _ = h.Api.restrictedNamespaces(user, string(project.Id), world)
 	}
-	res := overview.RenderTraces(ctx, chs, renderWorld, string(queryJSON), restricted, world)
+	res := overview.RenderTraces(ctx, chs, renderWorld, string(queryJSON), restricted, world, namespaces)
 	if res.Error != "" {
 		return nil, mcp.NewToolResultError(res.Error)
 	}

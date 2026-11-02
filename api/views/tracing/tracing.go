@@ -65,7 +65,7 @@ type Event struct {
 // Render renders the tracing view of the application. When allowService is
 // not nil, spans returned by a trace-id lookup are limited to the services it
 // accepts.
-func Render(ctx context.Context, ch *clickhouse.Client, app *model.Application, q url.Values, w *model.World, allowService func(string) bool) *View {
+func Render(ctx context.Context, ch *clickhouse.Client, app *model.Application, q url.Values, w *model.World, allowService func(string) bool, scope *clickhouse.NamespaceScope) *View {
 	if ch == nil {
 		return &View{Status: model.WARNING, Message: "Clickhouse integration is not configured"}
 	}
@@ -139,7 +139,7 @@ func Render(ctx context.Context, ch *clickhouse.Client, app *model.Application, 
 	}
 	switch {
 	case traceId != "":
-		spans, err = ch.GetSpansByTraceId(ctx, traceId)
+		spans, err = ch.GetSpansByTraceIdScoped(ctx, traceId, scope)
 		if allowService != nil {
 			spans = filterSpans(spans, allowService)
 		}
@@ -154,6 +154,7 @@ func Render(ctx context.Context, ch *clickhouse.Client, app *model.Application, 
 			sq := clickhouse.SpanQuery{
 				Ctx:              w.Ctx,
 				ExcludePeerAddrs: ignoredPeerAddrs,
+				Scope:            scope,
 			}
 			sq.AddFilter("ServiceName", "=", otelService)
 			histogram, e = ch.GetSpansByServiceNameHistogram(ctx, sq)
@@ -174,6 +175,7 @@ func Render(ctx context.Context, ch *clickhouse.Client, app *model.Application, 
 				Errors:           errors,
 				Limit:            limit,
 				ExcludePeerAddrs: ignoredPeerAddrs,
+				Scope:            scope,
 			}
 			sq.AddFilter("ServiceName", "=", otelService)
 			spans, e = ch.GetSpansByServiceName(ctx, sq)
