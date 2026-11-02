@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 
+	"github.com/coroot/coroot/api/views/application"
 	"github.com/coroot/coroot/api/views/overview"
 	"github.com/coroot/coroot/cache"
 	"github.com/coroot/coroot/db"
@@ -323,6 +324,39 @@ func (api *Api) filterOverviewForUser(u *db.User, projectId string, w *model.Wor
 		ov.Risks = filtered
 	}
 	return ov
+}
+
+// filterAppMapForUser drops the neighbour cards (clients / dependencies) of
+// an application map that the user may not view. The Application handler
+// only checks the application itself, so a namespace-scoped handoff user
+// still saw every application its database talks to, by name, namespace
+// and status: the Kubernetes API, the operators, the Coroot agent. The
+// Overview map is filtered the same way (filterOverviewForUser).
+func (api *Api) filterAppMapForUser(u *db.User, projectId string, w *model.World, v *application.View) *application.View {
+	if v == nil || v.AppMap == nil || u == nil || w == nil {
+		return v
+	}
+	keep := func(apps []*application.Application) []*application.Application {
+		out := make([]*application.Application, 0, len(apps))
+		for _, a := range apps {
+			if a == nil {
+				continue
+			}
+			var allowed bool
+			if app := w.GetApplication(a.Id); app != nil {
+				allowed = api.canViewApplication(u, projectId, app)
+			} else {
+				allowed = api.IsAllowed(u, rbac.Actions.Project(projectId).Application(a.Category, a.Id.Namespace, a.Id.Kind, a.Id.Name).View())
+			}
+			if allowed {
+				out = append(out, a)
+			}
+		}
+		return out
+	}
+	v.AppMap.Clients = keep(v.AppMap.Clients)
+	v.AppMap.Dependencies = keep(v.AppMap.Dependencies)
+	return v
 }
 
 func (api *Api) renderIncidents(u *db.User, projectId string, w *model.World) map[model.ApplicationCategory]int {
