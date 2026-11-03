@@ -37,12 +37,11 @@
                 </v-card>
             </v-dialog>
         </template>
+        <!-- StackBlaze workspace with tracing but no traces yet: a getting-started page. -->
+        <TracingGuide v-else-if="handoff && view.message === 'not_found'" />
         <v-alert v-else-if="view.message" color="info" outlined text class="message">
             <template v-if="view.message === 'not_found'">
-                <template v-if="handoff"
-                    >No traces yet. Turn Tracing on for an app in StackBlaze; its traces appear here after the next deploy.</template
-                >
-                <template v-else>This page only shows traces from OpenTelemetry integrations, not from eBPF.</template>
+                This page only shows traces from OpenTelemetry integrations, not from eBPF.
                 <div class="mt-2">
                     <OpenTelemetryIntegration color="primary">{{ integrateLabel }}</OpenTelemetryIntegration>
                 </div>
@@ -436,10 +435,11 @@ import Heatmap from '../components/Heatmap.vue';
 import TracingTrace from '../components/TracingTrace.vue';
 import FlameGraph from '../components/FlameGraph.vue';
 import OpenTelemetryIntegration from '@/views/OpenTelemetryIntegration.vue';
+import TracingGuide from '../components/TracingGuide.vue';
 import { isHandoffUser, returnUrlOrigin } from '../utils/handoff';
 
 export default {
-    components: { Views, OpenTelemetryIntegration, FlameGraph, TracingTrace, Heatmap },
+    components: { Views, OpenTelemetryIntegration, TracingGuide, FlameGraph, TracingTrace, Heatmap },
 
     data() {
         return {
