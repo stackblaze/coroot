@@ -158,7 +158,7 @@ export default {
             return categories;
         },
         categoriesDisabled() {
-            return !!this.search || !!this.selectedNamespaces.length;
+            return !!this.search;
         },
         namespaces() {
             const map = {};
@@ -191,8 +191,12 @@ export default {
                 if (search) {
                     return a.id.includes(search) || (a.type && a.type.name.includes(search)) || (a.cluster && a.cluster.includes(search));
                 }
-                if (selectedNamespaces.size) {
-                    return selectedNamespaces.has(this.$utils.appId(a.id).ns);
+                // Categories apply inside a selected namespace too: a tenant's
+                // handoff lands on its namespace, where one-off platform Jobs
+                // (dumps, restores, builds; the hidden platform-jobs category)
+                // used to list as applications.
+                if (selectedNamespaces.size && !selectedNamespaces.has(this.$utils.appId(a.id).ns)) {
+                    return false;
                 }
                 return selectedCategories.has(a.category);
             });
