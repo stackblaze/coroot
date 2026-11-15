@@ -89,7 +89,7 @@ func TestClickhouseReport(t *testing.T) {
 	i.Clickhouse = c
 	c.Up = constSeries(ctx, 1)
 	c.PartsToDelayInsert = constSeries(ctx, 1000)
-	c.AsyncMetrics["MaxPartCountForPartition"] = constSeries(ctx, 300)
+	c.MaxPartsInPartition = constSeries(ctx, 300)
 	// Not replicated: a delay value must not raise the replication check.
 	c.ReplicatedTables = constSeries(ctx, 0)
 	c.AsyncMetrics["ReplicasMaxAbsoluteDelay"] = constSeries(ctx, 120)
@@ -102,7 +102,7 @@ func TestClickhouseReport(t *testing.T) {
 	assert.Empty(t, failing(a.reports[0]))
 
 	c.ReplicatedTables = constSeries(ctx, 3)
-	c.AsyncMetrics["MaxPartCountForPartition"] = constSeries(ctx, 900)
+	c.MaxPartsInPartition = constSeries(ctx, 900)
 	c.MutationsFailing = constSeries(ctx, 1)
 	a.reports = nil
 	a.clickhouse()

@@ -18,7 +18,7 @@ func (a *appAuditor) opensearch() {
 	statusCheck := report.CreateCheck(model.Checks.OpensearchClusterStatus)
 	rejectionsCheck := report.CreateCheck(model.Checks.OpensearchRejections)
 
-	table := report.GetOrCreateTable("Node", "Roles", "Status", "Cluster", "Documents", "Size", "Version")
+	table := report.GetOrCreateTable("Node", "Roles", "Status", "Cluster", "Documents on node", "Size on node", "Version")
 	shardsChart := report.GetOrCreateChart("Shards by state", nil)
 	searchChart := report.GetOrCreateChart("Search requests, per second", nil)
 	searchLatencyChart := report.GetOrCreateChart("Search average latency, seconds", nil)
@@ -28,8 +28,8 @@ func (a *appAuditor) opensearch() {
 	queueChart := report.GetOrCreateChartGroup("Thread pool queues on <selector>", nil)
 	heapChart := report.GetOrCreateChart("JVM heap usage, %", nil)
 	gcChart := report.GetOrCreateChart("Time spent in garbage collection, seconds/second", nil)
-	docsChart := report.GetOrCreateChart("Documents", nil)
-	sizeChart := report.GetOrCreateChart("Index size, bytes", nil)
+	docsChart := report.GetOrCreateChart("Documents on each node (with replica copies)", nil)
+	sizeChart := report.GetOrCreateChart("Index size on each node, bytes", nil)
 
 	availabilityCheck.AddWidget(table.Widget())
 	statusCheck.AddWidget(shardsChart.Widget())
@@ -68,13 +68,18 @@ func (a *appAuditor) opensearch() {
 
 		rejected := timeseries.NewAggregate(timeseries.NanSum)
 		rejectedBy := map[string]model.SeriesData{}
+		// Only what was rejected is drawn: a chart of zero series says nothing.
 		for pool, ts := range o.PoolRejected {
 			rejected.Add(ts)
-			rejectedBy[pool+" pool"] = ts
+			if ts.Reduce(timeseries.Max) > 0 {
+				rejectedBy[pool+" pool"] = ts
+			}
 		}
 		for breaker, ts := range o.BreakerTripped {
 			rejected.Add(ts)
-			rejectedBy[breaker+" breaker"] = ts
+			if ts.Reduce(timeseries.Max) > 0 {
+				rejectedBy[breaker+" breaker"] = ts
+			}
 		}
 		if !obsolete && rejected.Get().Last() > 0 {
 			rejectionsCheck.AddItem("%s", i.Name)

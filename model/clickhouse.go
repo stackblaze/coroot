@@ -22,8 +22,15 @@ type Clickhouse struct {
 	Version LabelLastValue
 
 	Metrics      map[string]*timeseries.TimeSeries // system.metrics: current values
-	Events       map[string]*timeseries.TimeSeries // system.events: per-second rates
 	AsyncMetrics map[string]*timeseries.TimeSeries // system.asynchronous_metrics
+
+	// What other users do (system.query_log, without the agent's own
+	// queries and the server's log tables), per second.
+	Queries        map[string]*timeseries.TimeSeries // by kind: select, insert, other
+	FailedQueries  *timeseries.TimeSeries
+	QueryTime      *timeseries.TimeSeries // seconds spent in queries
+	InsertedRows   *timeseries.TimeSeries
+	RunningQueries *timeseries.TimeSeries
 
 	ReplicatedTables    *timeseries.TimeSeries
 	MutationsUnfinished *timeseries.TimeSeries
@@ -32,6 +39,10 @@ type Clickhouse struct {
 	PartsToThrowInsert  *timeseries.TimeSeries
 	PartsToDelayInsert  *timeseries.TimeSeries
 
+	// Tables outside the system database.
+	TablesSize          *timeseries.TimeSeries
+	MaxPartsInPartition *timeseries.TimeSeries
+
 	TableSize  map[ClickhouseTable]*timeseries.TimeSeries
 	TableParts map[ClickhouseTable]*timeseries.TimeSeries
 }
@@ -39,7 +50,7 @@ type Clickhouse struct {
 func NewClickhouse() *Clickhouse {
 	return &Clickhouse{
 		Metrics:      map[string]*timeseries.TimeSeries{},
-		Events:       map[string]*timeseries.TimeSeries{},
+		Queries:      map[string]*timeseries.TimeSeries{},
 		AsyncMetrics: map[string]*timeseries.TimeSeries{},
 		TableSize:    map[ClickhouseTable]*timeseries.TimeSeries{},
 		TableParts:   map[ClickhouseTable]*timeseries.TimeSeries{},
