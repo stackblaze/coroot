@@ -23,9 +23,21 @@ func clickhouse(instance *model.Instance, queryName string, m *model.MetricValue
 	case "clickhouse_metric":
 		n := m.Labels["metric"]
 		c.Metrics[n] = merge(c.Metrics[n], m.Values, timeseries.Any)
-	case "clickhouse_events_total":
-		n := m.Labels["event"]
-		c.Events[n] = merge(c.Events[n], m.Values, timeseries.Any)
+	case "clickhouse_queries_per_second":
+		k := m.Labels["kind"]
+		c.Queries[k] = merge(c.Queries[k], m.Values, timeseries.Any)
+	case "clickhouse_failed_queries_per_second":
+		c.FailedQueries = merge(c.FailedQueries, m.Values, timeseries.Any)
+	case "clickhouse_query_seconds_per_second":
+		c.QueryTime = merge(c.QueryTime, m.Values, timeseries.Any)
+	case "clickhouse_inserted_rows_per_second":
+		c.InsertedRows = merge(c.InsertedRows, m.Values, timeseries.Any)
+	case "clickhouse_running_queries":
+		c.RunningQueries = merge(c.RunningQueries, m.Values, timeseries.Any)
+	case "clickhouse_tables_size_bytes":
+		c.TablesSize = merge(c.TablesSize, m.Values, timeseries.Any)
+	case "clickhouse_max_parts_in_partition":
+		c.MaxPartsInPartition = merge(c.MaxPartsInPartition, m.Values, timeseries.Any)
 	case "clickhouse_async_metric":
 		n := m.Labels["metric"]
 		c.AsyncMetrics[n] = merge(c.AsyncMetrics[n], m.Values, timeseries.Any)

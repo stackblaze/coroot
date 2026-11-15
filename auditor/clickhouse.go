@@ -6,7 +6,9 @@ import (
 	"github.com/coroot/coroot/utils"
 )
 
-// The tab exists once the cluster agent scrapes at least one server.
+// The tab exists once the cluster agent scrapes at least one server. Query,
+// insert, size and parts figures are the application's: the agent leaves out
+// its own queries and the server's log tables (database system).
 func (a *appAuditor) clickhouse() {
 	if !a.app.IsClickhouse() {
 		return
@@ -24,7 +26,7 @@ func (a *appAuditor) clickhouse() {
 	latencyChart := report.GetOrCreateChart("Average query time, seconds", nil)
 	runningChart := report.GetOrCreateChart("Running queries", nil)
 	longestChart := report.GetOrCreateChart("Longest running query, seconds", nil)
-	insertedChart := report.GetOrCreateChart("Inserted rows, per second", nil)
+	insertedChart := report.GetOrCreateChart("Rows inserted by queries, per second", nil)
 	connectionsChart := report.GetOrCreateChartGroup("Connections on <selector>", nil)
 	partsChart := report.GetOrCreateChartGroup("Active parts in the fullest partition on <selector>", nil)
 	mergesChart := report.GetOrCreateChartGroup("Merges and mutations on <selector>", nil)
@@ -59,7 +61,7 @@ func (a *appAuditor) clickhouse() {
 			replicationCheck.AddItem("%s", i.Name)
 		}
 
-		maxParts := c.AsyncMetrics["MaxPartCountForPartition"]
+		maxParts := c.MaxPartsInPartition
 		if limit := c.PartsToDelayInsert.Last(); live && limit > 0 && maxParts.Last()/limit*100 > partsCheck.Threshold {
 			partsCheck.AddItem("%s", i.Name)
 		}
@@ -74,22 +76,22 @@ func (a *appAuditor) clickhouse() {
 
 		if queriesChart != nil {
 			queriesChart.GetOrCreateChart(i.Name).
-				AddSeries("select", c.Events["SelectQuery"]).
-				AddSeries("insert", c.Events["InsertQuery"]).
-				AddSeries("failed", c.Events["FailedQuery"], "black")
+				AddSeries("select", c.Queries["select"]).
+				AddSeries("insert", c.Queries["insert"]).
+				AddSeries("other", c.Queries["other"]).
+				AddSeries("failed", c.FailedQueries, "black")
 		}
 		if latencyChart != nil {
-			latencyChart.AddSeries(i.Name, timeseries.Aggregate2(c.Events["QueryTimeMicroseconds"], c.Events["Query"],
-				func(micros, queries float32) float32 { return micros / queries / 1e6 }))
+			latencyChart.AddSeries(i.Name, timeseries.Div(c.QueryTime, clickhouseQueries(c)))
 		}
 		if runningChart != nil {
-			runningChart.AddSeries(i.Name, c.Metrics["Query"])
+			runningChart.AddSeries(i.Name, c.RunningQueries)
 		}
 		if longestChart != nil {
 			longestChart.AddSeries(i.Name, c.LongestQuery)
 		}
 		if insertedChart != nil {
-			insertedChart.AddSeries(i.Name, c.Events["InsertedRows"])
+			insertedChart.AddSeries(i.Name, c.InsertedRows)
 		}
 		if connectionsChart != nil {
 			connectionsChart.GetOrCreateChart(i.Name).Stacked().
@@ -156,7 +158,7 @@ func clickhouseInstanceRow(table *model.Table, i *model.Instance) {
 	}
 
 	queries := model.NewTableCell()
-	if v := c.Events["Query"].Last(); !timeseries.IsNaN(v) {
+	if v := clickhouseQueries(c).Last(); !timeseries.IsNaN(v) {
 		queries.SetValue(utils.FormatFloat(v)).SetUnit("/s")
 	}
 
@@ -170,9 +172,18 @@ func clickhouseInstanceRow(table *model.Table, i *model.Instance) {
 	}
 
 	size := model.NewTableCell()
-	if v := c.AsyncMetrics["TotalBytesOfMergeTreeTables"].Last(); !timeseries.IsNaN(v) {
+	if v := c.TablesSize.Last(); !timeseries.IsNaN(v) {
 		size.Value, size.Unit = utils.FormatBytes(v)
 	}
 
 	table.AddRow(name, status, queries, delay, size, model.NewTableCell(c.Version.Value()))
+}
+
+// clickhouseQueries is the rate of all the queries other users ran.
+func clickhouseQueries(c *model.Clickhouse) *timeseries.TimeSeries {
+	total := timeseries.NewAggregate(timeseries.NanSum)
+	for _, ts := range c.Queries {
+		total.Add(ts)
+	}
+	return total.Get()
 }
