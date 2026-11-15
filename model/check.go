@@ -91,6 +91,13 @@ var Checks = struct {
 	MongodbFragmentation       CheckConfig
 	MongodbBackups             CheckConfig
 	MemcachedAvailability      CheckConfig
+	OpensearchAvailability     CheckConfig
+	OpensearchClusterStatus    CheckConfig
+	OpensearchRejections       CheckConfig
+	ClickhouseAvailability     CheckConfig
+	ClickhouseReplication      CheckConfig
+	ClickhouseParts            CheckConfig
+	ClickhouseMutations        CheckConfig
 	PostgresAvailability       CheckConfig
 	PostgresLatency            CheckConfig
 	PostgresReplicationLag     CheckConfig
@@ -360,6 +367,64 @@ var Checks = struct {
 		DefaultThreshold:        0,
 		MessageTemplate:         `{{.ItemsWithToBe "memcached instance"}} unavailable`,
 		ConditionFormatTemplate: "the number of unavailable memcached instances > <threshold>",
+	},
+	OpensearchAvailability: CheckConfig{
+		Category:                AuditReportOpensearch,
+		Type:                    CheckTypeItemBased,
+		Title:                   "OpenSearch availability",
+		DefaultThreshold:        0,
+		MessageTemplate:         `{{.ItemsWithToBe "opensearch node"}} unavailable`,
+		ConditionFormatTemplate: "the number of unavailable opensearch nodes > <threshold>",
+	},
+	OpensearchClusterStatus: CheckConfig{
+		Category:                AuditReportOpensearch,
+		Type:                    CheckTypeItemBased,
+		Title:                   "OpenSearch cluster status",
+		DefaultThreshold:        0,
+		MessageTemplate:         `{{.ItemsWithToBe "opensearch cluster"}} red: some primary shards are not assigned`,
+		ConditionFormatTemplate: "the number of clusters in the red status > <threshold>",
+	},
+	OpensearchRejections: CheckConfig{
+		Category:                AuditReportOpensearch,
+		Type:                    CheckTypeItemBased,
+		Title:                   "OpenSearch rejected requests",
+		DefaultThreshold:        0,
+		MessageTemplate:         `{{.ItemsWithToBe "opensearch node"}} rejecting requests: a thread pool queue is full or a circuit breaker tripped`,
+		ConditionFormatTemplate: "the number of nodes rejecting requests > <threshold>",
+	},
+	ClickhouseAvailability: CheckConfig{
+		Category:                AuditReportClickhouse,
+		Type:                    CheckTypeItemBased,
+		Title:                   "ClickHouse availability",
+		DefaultThreshold:        0,
+		MessageTemplate:         `{{.ItemsWithToBe "clickhouse instance"}} unavailable`,
+		ConditionFormatTemplate: "the number of unavailable clickhouse instances > <threshold>",
+	},
+	ClickhouseReplication: CheckConfig{
+		Category:                AuditReportClickhouse,
+		Type:                    CheckTypeItemBased,
+		Title:                   "ClickHouse replication",
+		DefaultThreshold:        30,
+		Unit:                    CheckUnitSecond,
+		MessageTemplate:         `{{.ItemsWithToBe "clickhouse replica"}} lagging or read-only`,
+		ConditionFormatTemplate: "replication delay > <threshold> or a replicated table is read-only",
+	},
+	ClickhouseParts: CheckConfig{
+		Category:                AuditReportClickhouse,
+		Type:                    CheckTypeItemBased,
+		Title:                   "ClickHouse parts",
+		DefaultThreshold:        80,
+		Unit:                    CheckUnitPercent,
+		MessageTemplate:         `{{.ItemsWithToBe "clickhouse instance"}} accumulating parts faster than they are merged: inserts are about to be slowed down`,
+		ConditionFormatTemplate: "the number of active parts in a partition > <threshold> of `parts_to_delay_insert`",
+	},
+	ClickhouseMutations: CheckConfig{
+		Category:                AuditReportClickhouse,
+		Type:                    CheckTypeItemBased,
+		Title:                   "ClickHouse mutations",
+		DefaultThreshold:        0,
+		MessageTemplate:         `mutations are failing on {{.Items "clickhouse instance"}}`,
+		ConditionFormatTemplate: "the number of instances with failing mutations > <threshold>",
 	},
 	PostgresAvailability: CheckConfig{
 		Category:                AuditReportPostgres,
