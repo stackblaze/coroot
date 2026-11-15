@@ -219,6 +219,8 @@ var QUERIES = []Query{
 		"label_app_kubernetes_io_name",
 		"label_app_kubernetes_io_component", "label_app_kubernetes_io_part_of",
 		"label_valkey_io_cluster",
+		"label_clickhouse_altinity_com_chi", "label_clickhouse_keeper_altinity_com_chk",
+		"label_opensearch_org_opensearch_cluster", "label_opensearch_org_opensearch_nodepool",
 	),
 	qPod("kube_pod_status_phase", `kube_pod_status_phase > 0`, "phase"),
 	qPod("kube_pod_status_ready", `kube_pod_status_ready{condition="true"}`),

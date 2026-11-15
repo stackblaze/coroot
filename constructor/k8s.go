@@ -288,6 +288,16 @@ func podLabels(metrics []*model.MetricValues, pods map[string]*model.Instance) {
 			cluster = m.Labels["label_stackgres_io_cluster_name"]
 			role = m.Labels["label_role"]
 			manager = model.ClusterManagerStackGres
+		// Altinity clickhouse-operator: one StatefulSet per replica, so the
+		// replicas are joined by the installation name. Keeper pods of an
+		// installation may carry its chi label too; they form their own cluster.
+		case m.Labels["label_clickhouse_keeper_altinity_com_chk"] != "":
+			cluster = m.Labels["label_clickhouse_keeper_altinity_com_chk"]
+		case m.Labels["label_clickhouse_altinity_com_chi"] != "":
+			cluster = m.Labels["label_clickhouse_altinity_com_chi"]
+		// OpenSearch operator: one StatefulSet per node pool (job pods have no node pool).
+		case m.Labels["label_opensearch_org_opensearch_cluster"] != "" && m.Labels["label_opensearch_org_opensearch_nodepool"] != "":
+			cluster = m.Labels["label_opensearch_org_opensearch_cluster"]
 		case m.Labels["label_app_kubernetes_io_managed_by"] == "percona-server-mongodb-operator":
 			cluster = m.Labels["label_app_kubernetes_io_instance"]
 			manager = model.ClusterManagerPerconaMongoDB
