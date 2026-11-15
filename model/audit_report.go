@@ -24,6 +24,8 @@ const (
 	AuditReportRedis       AuditReportName = "Redis"
 	AuditReportMongodb     AuditReportName = "Mongodb"
 	AuditReportMemcached   AuditReportName = "Memcached"
+	AuditReportOpensearch  AuditReportName = "OpenSearch"
+	AuditReportClickhouse  AuditReportName = "ClickHouse"
 	AuditReportMysql       AuditReportName = "Mysql"
 	AuditReportJvm         AuditReportName = "JVM"
 	AuditReportDotNet      AuditReportName = ".NET"

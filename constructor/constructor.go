@@ -420,7 +420,7 @@ func enrichInstances(w *model.World, metrics map[string][]*model.MetricValues, r
 		instancesByListenAddr[addr] = betterInstance(instancesByListenAddr[addr], i)
 	}
 
-	for _, queryName := range []string{"pg_up", "redis_up", "mongo_up", "memcached_up"} {
+	for _, queryName := range []string{"pg_up", "redis_up", "mongo_up", "memcached_up", "opensearch_up", "clickhouse_up"} {
 		for _, m := range metrics[queryName] {
 			address := m.Labels["address"]
 			if address == "" {
@@ -439,6 +439,10 @@ func enrichInstances(w *model.World, metrics map[string][]*model.MetricValues, r
 				instance.Mongodb = model.NewMongodb()
 			case "memcached_up":
 				instance.Memcached = model.NewMemcached()
+			case "opensearch_up":
+				instance.Opensearch = model.NewOpensearch()
+			case "clickhouse_up":
+				instance.Clickhouse = model.NewClickhouse()
 			}
 		}
 	}
@@ -458,6 +462,12 @@ func enrichInstances(w *model.World, metrics map[string][]*model.MetricValues, r
 			case strings.HasPrefix(queryName, "memcached_"):
 				instance := findInstance(instancesByPod, instancesByListenAddr, rdsInstancesById, ecInstanceById, m.Labels, model.ApplicationTypeMemcached)
 				memcached(instance, queryName, m)
+			case strings.HasPrefix(queryName, "opensearch_"):
+				instance := findInstance(instancesByPod, instancesByListenAddr, rdsInstancesById, ecInstanceById, m.Labels, model.ApplicationTypeOpensearch, model.ApplicationTypeElasticsearch)
+				opensearch(instance, queryName, m)
+			case strings.HasPrefix(queryName, "clickhouse_"):
+				instance := findInstance(instancesByPod, instancesByListenAddr, rdsInstancesById, ecInstanceById, m.Labels, model.ApplicationTypeClickHouse)
+				clickhouse(instance, queryName, m)
 			case strings.HasPrefix(queryName, "mysql_"):
 				instance := findInstance(instancesByPod, instancesByListenAddr, rdsInstancesById, ecInstanceById, m.Labels, model.ApplicationTypeMysql)
 				mysql(instance, queryName, m)

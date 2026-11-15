@@ -115,6 +115,10 @@ func (at ApplicationType) AuditReport() AuditReportName {
 		return AuditReportMongodb
 	case ApplicationTypeMemcached:
 		return AuditReportMemcached
+	case ApplicationTypeOpensearch, ApplicationTypeElasticsearch:
+		return AuditReportOpensearch
+	case ApplicationTypeClickHouse:
+		return AuditReportClickhouse
 	case ApplicationTypeJava:
 		return AuditReportJvm
 	case ApplicationTypeDotNet:

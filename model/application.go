@@ -266,6 +266,24 @@ func (app *Application) IsMysql() bool {
 	return false
 }
 
+func (app *Application) IsOpensearch() bool {
+	for _, i := range app.Instances {
+		if i.Opensearch != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func (app *Application) IsClickhouse() bool {
+	for _, i := range app.Instances {
+		if i.Clickhouse != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func (app *Application) IsMemcached() bool {
 	for _, i := range app.Instances {
 		if i.Memcached != nil {

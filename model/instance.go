@@ -60,11 +60,13 @@ type Instance struct {
 	clusterRole      *timeseries.TimeSeries
 	ClusterComponent *Application
 
-	Postgres  *Postgres
-	Redis     *Redis
-	Mongodb   *Mongodb
-	Memcached *Memcached
-	Mysql     *Mysql
+	Postgres   *Postgres
+	Redis      *Redis
+	Mongodb    *Mongodb
+	Memcached  *Memcached
+	Opensearch *Opensearch
+	Clickhouse *Clickhouse
+	Mysql      *Mysql
 }
 
 func NewInstance(name string, owner *Application) *Instance {
@@ -107,6 +109,10 @@ func (instance *Instance) InstrumentedType() ApplicationType {
 		return ApplicationTypeMongodb
 	case instance.Memcached != nil:
 		return ApplicationTypeMemcached
+	case instance.Opensearch != nil:
+		return ApplicationTypeOpensearch
+	case instance.Clickhouse != nil:
+		return ApplicationTypeClickHouse
 	}
 	return ApplicationTypeUnknown
 }
